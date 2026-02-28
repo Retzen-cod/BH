@@ -525,8 +525,9 @@ export default function PatientList() {
     }
 
     // Importar hospitales que no existan aún en el dispositivo
+    const currentHospitals = await getAllHospitalsAsync();
     for (const h of incoming) {
-      const exists = allHospitals.some(e => e.id === h.id);
+      const exists = currentHospitals.some(e => e.id === h.id);
       if (!exists) await saveCustomHospital(h);
     }
 
