@@ -5,6 +5,19 @@ export const HNSJDDSM: HospitalConfig = {
   name:         'Hospital Nacional San Juan de Dios, San Miguel',
   abbreviation: 'HNSJDDSM',
 
+  groups: [
+    { key: 'sv',  label: 'Signos vitales', bg: '#DBEAFE', textColor: '#1D4ED8', cellBg: '#F0F9FF' },
+    { key: 'ing', label: '💧 Ingresos',    bg: '#D1FAE5', textColor: '#065F46', cellBg: '#F0FDF4' },
+    { key: 'egr', label: '🚽 Egresos',     bg: '#FEF3C7', textColor: '#92400E', cellBg: '#FFFBEB' },
+  ],
+
+  patientFields: {
+    nombre:   'optional',
+    edad:     'optional',
+    registro: 'optional',
+    talla:    'optional',
+  },
+
   dataCols: [
     // ── Signos vitales ───────────────────────────────────────────────────────
     { key: 'ta',   label: 'T/A',     width: 72, isTA: true,      group: 'sv' },

@@ -16,7 +16,25 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.JonathanGuevara.BH",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "CFBundleDocumentTypes": [
+          {
+            "CFBundleTypeRole": "Editor",
+            "CFBundleTypeName": "Balance Hídrico",
+            "LSItemContentTypes": ["com.JonathanGuevara.BH.bhd"]
+          }
+        ],
+        "UTImportedTypeDeclarations": [
+          {
+            "UTTypeIdentifier": "com.JonathanGuevara.BH.bhd",
+            "UTTypeDescription": "Balance Hídrico Data",
+            "UTTypeConformsTo": ["public.data"],
+            "UTTypeTagSpecification": {
+              "public.filename-extension": ["bhd"],
+              "public.mime-type": "application/x-bhd"
+            }
+          }
+        ]
       }
     },
     "android": {
@@ -27,7 +45,21 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.JonathanGuevara.BH"
+      "package": "com.JonathanGuevara.BH",
+      "intentFilters": [
+        {
+          "action": "android.intent.action.VIEW",
+          "category": [
+            "android.intent.category.DEFAULT",
+            "android.intent.category.BROWSABLE"
+          ],
+          "data": [
+            { "mimeType": "application/x-bhd" },
+            { "mimeType": "application/octet-stream" },
+            { "scheme": "file", "host": "*", "pathPattern": ".*\\.bhd" }
+          ]
+        }
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"

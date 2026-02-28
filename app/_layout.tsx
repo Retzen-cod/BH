@@ -14,6 +14,10 @@ export default function RootLayout() {
           name="patient/[id]"
           options={{ headerShown: false }}
         />
+        <Stack.Screen
+          name="templates"
+          options={{ headerShown: false }}
+        />
       </Stack>
     </GestureHandlerRootView>
   );

@@ -5,6 +5,9 @@ import {
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { StatusBar } from 'expo-status-bar';
+import * as NavigationBar from 'expo-navigation-bar';
+import * as Linking from 'expo-linking';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
@@ -13,7 +16,9 @@ import { Patient } from '../src/types';
 import { getPatients, savePatient, deletePatient, importPatient } from '../src/utils/storage';
 import { buildEmptyRows, calcBlocks, calcBHTotal, calcDHTotal, calcSC } from '../src/utils/calculations';
 import { getSettings, saveSettings, formatHora, formatDate, Settings } from '../src/utils/settings';
-import { getAllHospitals, getHospital } from '../src/hospitals';
+import { getAllHospitalsAsync } from '../src/hospitals';
+import { HospitalConfig, FieldMode, PatientFieldsDef } from '../src/types/hospital';
+import { saveCustomHospital } from '../src/utils/hospitalStorage';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -35,19 +40,46 @@ function calcDuracion(start: string, end: string): number {
   return h;
 }
 
-async function sharePatientList(patients: Patient[]) {
+/**
+ * Comparte pacientes en formato .bhd (v2), incluyendo la config del hospital
+ * para que el receptor pueda importar la tabla aunque no la tenga instalada.
+ */
+async function sharePatientList(patients: Patient[], allHospitals: HospitalConfig[]) {
   try {
-    const json  = JSON.stringify(patients.length === 1 ? patients[0] : patients, null, 2);
-    const label = patients.length === 1 ? `cama_${patients[0].cama}` : `${patients.length}_pacientes`;
-    const path  = `${FileSystem.cacheDirectory}bh_${label}.json`;
+    const usedIds      = [...new Set(patients.map(p => p.hospitalId).filter(Boolean))];
+    const usedHospitals = usedIds
+      .map(id => allHospitals.find(h => h.id === id))
+      .filter(Boolean) as HospitalConfig[];
+
+    const payload = { v: 2, patients, hospitals: usedHospitals };
+    const json    = JSON.stringify(payload, null, 2);
+    const label   = patients.length === 1 ? `cama_${patients[0].cama}` : `${patients.length}_pacientes`;
+    const path    = `${FileSystem.cacheDirectory}bh_${label}.bhd`;
     await FileSystem.writeAsStringAsync(path, json, { encoding: FileSystem.EncodingType.UTF8 });
     const canShare = await Sharing.isAvailableAsync();
     if (canShare) {
-      await Sharing.shareAsync(path, { mimeType: 'application/json', dialogTitle: `BH ${label}` });
+      await Sharing.shareAsync(path, { mimeType: 'application/x-bhd', dialogTitle: `BH ${label}` });
     } else {
       Alert.alert('No disponible', 'Compartir no está disponible en este dispositivo.');
     }
   } catch { Alert.alert('Error', 'No se pudo compartir.'); }
+}
+
+/**
+ * Parsea un archivo .bhd.
+ * Soporta formato v2 { v, patients, hospitals } y el formato antiguo Patient | Patient[].
+ */
+function parseBHD(raw: string): { patients: Patient[]; hospitals: HospitalConfig[] } {
+  const data = JSON.parse(raw);
+  if (data && data.v === 2 && Array.isArray(data.patients)) {
+    return {
+      patients: data.patients as Patient[],
+      hospitals: Array.isArray(data.hospitals) ? data.hospitals as HospitalConfig[] : [],
+    };
+  }
+  // Formato antiguo: Patient o Patient[]
+  const patients: Patient[] = Array.isArray(data) ? data : [data];
+  return { patients, hospitals: [] };
 }
 
 // ─── HourSelector ────────────────────────────────────────────────────────────
@@ -88,16 +120,90 @@ function HourSelector({
   );
 }
 
+// ─── Modal selector de hospital (con buscador) ───────────────────────────────
+
+function HospitalPickerModal({
+  visible, hospitals, selectedId, onSelect, onClose,
+}: {
+  visible: boolean;
+  hospitals: HospitalConfig[];
+  selectedId: string;
+  onSelect: (h: HospitalConfig) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState('');
+  const filtered = hospitals.filter((h) =>
+    h.name.toLowerCase().includes(query.toLowerCase()) ||
+    h.abbreviation.toLowerCase().includes(query.toLowerCase())
+  );
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <TouchableOpacity style={styles.pickerOverlay} activeOpacity={1} onPress={onClose}>
+        <TouchableOpacity activeOpacity={1} style={styles.pickerSheet}>
+          <Text style={styles.pickerTitle}>Seleccionar hospital</Text>
+
+          <TextInput
+            style={styles.pickerSearch}
+            placeholder="Buscar hospital..."
+            placeholderTextColor="#9CA3AF"
+            value={query}
+            onChangeText={setQuery}
+            autoFocus
+            clearButtonMode="while-editing"
+          />
+
+          <ScrollView style={{ maxHeight: 320 }} keyboardShouldPersistTaps="handled">
+            {filtered.length === 0 && (
+              <Text style={styles.pickerEmpty}>Sin resultados</Text>
+            )}
+            {filtered.map((h) => {
+              const sel = h.id === selectedId;
+              return (
+                <TouchableOpacity
+                  key={h.id}
+                  style={[styles.pickerItem, sel && styles.pickerItemSelected]}
+                  onPress={() => { onSelect(h); onClose(); setQuery(''); }}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.pickerItemName, sel && { color: '#2563EB' }]}>
+                      {h.name}
+                    </Text>
+                    <Text style={styles.pickerItemMeta}>
+                      {h.abbreviation} · {h.dataCols.length} columnas · {h.groups.length} grupos
+                    </Text>
+                  </View>
+                  {sel && <Text style={styles.pickerCheck}>✓</Text>}
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+
+          <TouchableOpacity style={styles.pickerCancel} onPress={() => { onClose(); setQuery(''); }}>
+            <Text style={styles.pickerCancelText}>Cancelar</Text>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </TouchableOpacity>
+    </Modal>
+  );
+}
+
 // ─── Modal agregar paciente ───────────────────────────────────────────────────
 
+/** Devuelve el modo de un campo según la config del hospital (fallback: 'optional') */
+function fieldMode(fields: PatientFieldsDef | undefined, key: keyof PatientFieldsDef): FieldMode {
+  return fields?.[key] ?? 'optional';
+}
+
 function AddPatientModal({
-  visible, onClose, onSave, timeFormat, hospitalId,
+  visible, onClose, onSave, timeFormat, defaultHospitalId, allHospitals,
 }: {
   visible: boolean;
   onClose: () => void;
   onSave: (p: Patient) => void;
   timeFormat: '12h' | '24h';
-  hospitalId: string;
+  defaultHospitalId: string;
+  allHospitals: HospitalConfig[];
 }) {
   const [cama, setCama]         = useState('');
   const [nombre, setNombre]     = useState('');
@@ -107,21 +213,51 @@ function AddPatientModal({
   const [talla, setTalla]       = useState('');
   const [startHora, setStart]   = useState('07:00');
   const [endHora, setEnd]       = useState('07:00');
+  const [selHospitalId, setSelHospitalId] = useState(defaultHospitalId);
+  const [showHPicker, setShowHPicker]     = useState(false);
+  const [hQuery, setHQuery]               = useState('');
+
+  // Sincronizar hospital por defecto al abrir el modal
+  React.useEffect(() => {
+    if (visible) setSelHospitalId(defaultHospitalId);
+  }, [visible, defaultHospitalId]);
+
+  const selHospital = allHospitals.find(h => h.id === selHospitalId) ?? allHospitals[0];
+  const pf = selHospital?.patientFields; // atajo
+
+  const filteredH = allHospitals.filter((h) =>
+    h.name.toLowerCase().includes(hQuery.toLowerCase()) ||
+    h.abbreviation.toLowerCase().includes(hQuery.toLowerCase())
+  );
 
   function reset() {
     setCama(''); setNombre(''); setEdad(''); setRegistro('');
     setPeso(''); setTalla(''); setStart('07:00'); setEnd('07:00');
+    setShowHPicker(false); setHQuery('');
   }
 
   function handleSave() {
+    // ── Validaciones fijas ──
     if (!cama.trim()) {
-      Alert.alert('Campo requerido', 'El N° de cama es obligatorio.');
-      return;
+      Alert.alert('Campo requerido', 'El N° de cama es obligatorio.'); return;
     }
     if (!peso || isNaN(Number(peso)) || Number(peso) <= 0) {
-      Alert.alert('Campo requerido', 'El peso es obligatorio.');
-      return;
+      Alert.alert('Campo requerido', 'El peso es obligatorio.'); return;
     }
+    // ── Validaciones según hospital ──
+    if (fieldMode(pf, 'nombre')   === 'required' && !nombre.trim()) {
+      Alert.alert('Campo requerido', 'El nombre es obligatorio para este hospital.'); return;
+    }
+    if (fieldMode(pf, 'edad')     === 'required' && !edad) {
+      Alert.alert('Campo requerido', 'La edad es obligatoria para este hospital.'); return;
+    }
+    if (fieldMode(pf, 'registro') === 'required' && !registro.trim()) {
+      Alert.alert('Campo requerido', 'El N° de registro es obligatorio para este hospital.'); return;
+    }
+    if (fieldMode(pf, 'talla')    === 'required' && !talla) {
+      Alert.alert('Campo requerido', 'La talla es obligatoria para este hospital.'); return;
+    }
+
     const p  = Number(peso);
     const t  = Number(talla);
     const sc = calcSC(p);
@@ -136,7 +272,7 @@ function AddPatientModal({
       sc,
       startHora,
       endHora,
-      hospitalId,
+      hospitalId: selHospital?.id ?? defaultHospitalId,
       createdAt: new Date().toISOString(),
       rows: buildEmptyRows(startHora, endHora),
     };
@@ -155,20 +291,95 @@ function AddPatientModal({
       >
         <ScrollView style={styles.modalBox} keyboardShouldPersistTaps="handled">
           <Text style={styles.modalTitle}>Nuevo paciente</Text>
-          <Text style={styles.modalHospital}>{getHospital(hospitalId).name}</Text>
 
-          <Field label="N° Cama *"          value={cama}     onChange={setCama}     keyboardType="default" />
-          <Field label="Nombre / Iniciales"  value={nombre}   onChange={setNombre} />
-          <Field label="Edad"                value={edad}     onChange={setEdad}     keyboardType="numeric" />
-          <Field label="N° Registro"         value={registro} onChange={setRegistro} keyboardType="default" />
-          <Field label="Peso (kg) *"         value={peso}     onChange={setPeso}     keyboardType="decimal-pad" />
-          <Field label="Talla (cm)"          value={talla}    onChange={setTalla}    keyboardType="decimal-pad" />
+          {/* ── Selector de hospital ── */}
+          <View style={styles.field}>
+            <Text style={styles.fieldLabel}>Hospital</Text>
+            <TouchableOpacity
+              style={styles.hospitalPickerBtn}
+              onPress={() => setShowHPicker(!showHPicker)}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={styles.hospitalPickerName} numberOfLines={1}>
+                  {selHospital?.name ?? 'Seleccionar...'}
+                </Text>
+                <Text style={styles.hospitalPickerMeta}>
+                  {selHospital?.abbreviation} · {selHospital?.dataCols.length} columnas
+                </Text>
+              </View>
+              <Text style={styles.hospitalPickerArrow}>{showHPicker ? '▲' : '▼'}</Text>
+            </TouchableOpacity>
+
+            {showHPicker && (
+              <View style={styles.hospitalInlineList}>
+                <TextInput
+                  style={styles.hospitalInlineSearch}
+                  placeholder="Buscar hospital..."
+                  placeholderTextColor="#9CA3AF"
+                  value={hQuery}
+                  onChangeText={setHQuery}
+                  autoFocus
+                />
+                {filteredH.map((h) => (
+                  <TouchableOpacity
+                    key={h.id}
+                    style={[styles.hospitalInlineItem, h.id === selHospitalId && styles.hospitalInlineItemSel]}
+                    onPress={() => { setSelHospitalId(h.id); setShowHPicker(false); setHQuery(''); }}
+                  >
+                    <Text style={[styles.hospitalInlineItemName, h.id === selHospitalId && { color: '#2563EB' }]}>
+                      {h.name}
+                    </Text>
+                    <Text style={styles.pickerItemMeta}>
+                      {h.abbreviation} · {h.dataCols.length} col · {h.groups.length} grupos
+                    </Text>
+                    {h.id === selHospitalId && <Text style={styles.pickerCheck}>✓</Text>}
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+          </View>
+
+          {/* ── Campos fijos (siempre obligatorios) ── */}
+          <Field label="N° Cama *" value={cama} onChange={setCama} />
+          <Field label="Peso (kg) *" value={peso} onChange={setPeso} keyboardType="decimal-pad" />
 
           {peso ? (
             <Text style={styles.scPreview}>
               SC ≈ {calcSC(Number(peso)).toFixed(2)} m²
             </Text>
           ) : null}
+
+          {/* ── Campos opcionales según el hospital ── */}
+          {fieldMode(pf, 'nombre') !== 'hidden' && (
+            <Field
+              label={`Nombre / Iniciales${fieldMode(pf, 'nombre') === 'required' ? ' *' : ''}`}
+              value={nombre}
+              onChange={setNombre}
+            />
+          )}
+          {fieldMode(pf, 'edad') !== 'hidden' && (
+            <Field
+              label={`Edad${fieldMode(pf, 'edad') === 'required' ? ' *' : ''}`}
+              value={edad}
+              onChange={setEdad}
+              keyboardType="numeric"
+            />
+          )}
+          {fieldMode(pf, 'registro') !== 'hidden' && (
+            <Field
+              label={`N° Registro${fieldMode(pf, 'registro') === 'required' ? ' *' : ''}`}
+              value={registro}
+              onChange={setRegistro}
+            />
+          )}
+          {fieldMode(pf, 'talla') !== 'hidden' && (
+            <Field
+              label={`Talla (cm)${fieldMode(pf, 'talla') === 'required' ? ' *' : ''}`}
+              value={talla}
+              onChange={setTalla}
+              keyboardType="decimal-pad"
+            />
+          )}
 
           <HourSelector label="Inicio del balance" value={startHora} onChange={setStart} timeFormat={timeFormat} />
           <HourSelector label="Fin del balance"    value={endHora}   onChange={setEnd}   timeFormat={timeFormat} />
@@ -217,12 +428,13 @@ function Field({
 // ─── Card de paciente ─────────────────────────────────────────────────────────
 
 function PatientCard({
-  patient, onPress, onLongPress, onDelete, timeFormat, selected, multiSelectMode,
+  patient, onPress, onLongPress, onDelete, onShare, timeFormat, selected, multiSelectMode,
 }: {
   patient: Patient;
   onPress: () => void;
   onLongPress: () => void;
   onDelete: () => void;
+  onShare: () => void;
   timeFormat: '12h' | '24h';
   selected: boolean;
   multiSelectMode: boolean;
@@ -235,9 +447,9 @@ function PatientCard({
 
   function showMenu() {
     Alert.alert(`Cama ${patient.cama}`, 'Selecciona una acción', [
-      { text: '↑ Compartir JSON', onPress: () => sharePatientList([patient]) },
-      { text: '🗑 Eliminar',       onPress: onDelete, style: 'destructive' },
-      { text: 'Cancelar',          style: 'cancel' },
+      { text: '↑ Compartir', onPress: onShare },
+      { text: '🗑 Eliminar',  onPress: onDelete, style: 'destructive' },
+      { text: 'Cancelar',    style: 'cancel' },
     ]);
   }
 
@@ -299,22 +511,74 @@ export default function PatientList() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
-  const [patients, setPatients]       = useState<Patient[]>([]);
-  const [showAdd, setShowAdd]         = useState(false);
-  const [settings, setSettings]       = useState<Settings>({ timeFormat: '24h', hospitalId: 'HNSJDDSM' });
-  const [multiSelectMode, setMulti]   = useState(false);
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
-
-  const hospitals = getAllHospitals();
+  const [patients, setPatients]               = useState<Patient[]>([]);
+  const [showAdd, setShowAdd]                 = useState(false);
+  const [settings, setSettings]               = useState<Settings>({ timeFormat: '24h', hospitalId: 'HNSJDDSM' });
+  const [multiSelectMode, setMulti]           = useState(false);
+  const [selectedIds, setSelectedIds]         = useState<string[]>([]);
+  const [allHospitals, setAllHospitals]       = useState<HospitalConfig[]>([]);
+  const [showHospitalPicker, setShowHospitalPicker] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
       getPatients().then(setPatients);
       getSettings().then(setSettings);
+      getAllHospitalsAsync().then(setAllHospitals);
       setMulti(false);
       setSelectedIds([]);
+      NavigationBar.setVisibilityAsync('hidden');
+      NavigationBar.setBehaviorAsync('overlay-swipe');
     }, [])
   );
+
+  // ─── Importar hospitales + pacientes desde un .bhd ────────────────────────
+
+  async function importBHDData(raw: string) {
+    const { patients: list, hospitals: incoming } = parseBHD(raw);
+
+    // Validar que hay pacientes
+    if (!list.length || !list[0].id || !list[0].cama || !Array.isArray(list[0].rows)) {
+      Alert.alert('Error', 'Formato de archivo incorrecto.');
+      return;
+    }
+
+    // Importar hospitales que no existan aún en el dispositivo
+    for (const h of incoming) {
+      const exists = allHospitals.some(e => e.id === h.id);
+      if (!exists) await saveCustomHospital(h);
+    }
+
+    // Importar pacientes
+    for (const p of list) {
+      if (p.id && p.cama && Array.isArray(p.rows)) await importPatient(p);
+    }
+
+    const [updatedPatients, updatedHospitals] = await Promise.all([
+      getPatients(),
+      getAllHospitalsAsync(),
+    ]);
+    setPatients(updatedPatients);
+    setAllHospitals(updatedHospitals);
+
+    const msg = list.length === 1
+      ? `Cama ${list[0].cama} importada.`
+      : `${list.length} pacientes importados.`;
+    Alert.alert('Importado', msg);
+  }
+
+  async function importFromUrl(url: string) {
+    if (!url || (!url.startsWith('content://') && !url.startsWith('file://'))) return;
+    try {
+      const raw = await FileSystem.readAsStringAsync(url);
+      await importBHDData(raw);
+    } catch { /* URL no es un archivo BHD válido — ignorar */ }
+  }
+
+  // Al abrir la app desde un archivo .bhd (ej. desde WhatsApp)
+  const initialUrl = Linking.useURL();
+  React.useEffect(() => {
+    if (initialUrl) importFromUrl(initialUrl);
+  }, [initialUrl]);
 
   async function handleSave(p: Patient) {
     await savePatient(p);
@@ -333,20 +597,10 @@ export default function PatientList() {
 
   async function handleImport() {
     try {
-      const result = await DocumentPicker.getDocumentAsync({ type: 'application/json', copyToCacheDirectory: true });
+      const result = await DocumentPicker.getDocumentAsync({ type: '*/*', copyToCacheDirectory: true });
       if (result.canceled) return;
-      const raw  = await FileSystem.readAsStringAsync(result.assets[0].uri);
-      const data = JSON.parse(raw);
-      const list: Patient[] = Array.isArray(data) ? data : [data];
-      for (const p of list) {
-        if (!p.id || !p.cama || !Array.isArray(p.rows)) {
-          Alert.alert('Error', 'Formato de archivo incorrecto.'); return;
-        }
-        await importPatient(p);
-      }
-      setPatients(await getPatients());
-      const msg = list.length === 1 ? `Cama ${list[0].cama} importada.` : `${list.length} pacientes importados.`;
-      Alert.alert('Importado', msg);
+      const raw = await FileSystem.readAsStringAsync(result.assets[0].uri);
+      await importBHDData(raw);
     } catch { Alert.alert('Error', 'No se pudo importar.'); }
   }
 
@@ -354,23 +608,6 @@ export default function PatientList() {
     const next    = settings.timeFormat === '24h' ? '12h' : '24h';
     const updated = await saveSettings({ timeFormat: next });
     setSettings(updated);
-  }
-
-  function selectHospital() {
-    if (hospitals.length === 1) {
-      Alert.alert('Hospital activo', hospitals[0].name);
-      return;
-    }
-    Alert.alert('Seleccionar hospital', 'Los nuevos registros usarán este formato', [
-      ...hospitals.map((h) => ({
-        text: (h.id === settings.hospitalId ? '✓ ' : '') + h.name,
-        onPress: async () => {
-          const updated = await saveSettings({ hospitalId: h.id });
-          setSettings(updated);
-        },
-      })),
-      { text: 'Cancelar', style: 'cancel' },
-    ]);
   }
 
   // ─── Multi-select ──────────────────────────────────────────────────────────
@@ -407,25 +644,30 @@ export default function PatientList() {
   }
 
   async function bulkShare() {
-    const selected = patients.filter((p) => selectedIds.includes(p.id));
-    await sharePatientList(selected);
+    const sel = patients.filter((p) => selectedIds.includes(p.id));
+    await sharePatientList(sel, allHospitals);
   }
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
     <View style={styles.screen}>
+      <StatusBar style="dark" backgroundColor="#ffffff" translucent={false} />
       {/* Espacio para status bar */}
       <View style={{ height: insets.top, backgroundColor: '#fff' }} />
 
       {/* Barra superior */}
       <View style={styles.topBar}>
         <Text style={styles.topBarTitle}>Balance Hídrico</Text>
-        <TouchableOpacity style={styles.hospitalBtn} onPress={selectHospital}>
+        <TouchableOpacity style={styles.hospitalBtn} onPress={() => setShowHospitalPicker(true)}>
           <Text style={styles.hospitalBtnText}>
-            {getHospital(settings.hospitalId).abbreviation} ▾
+            {(allHospitals.find(h => h.id === settings.hospitalId) ?? allHospitals[0])?.abbreviation ?? 'HNSJ'} ▾
           </Text>
         </TouchableOpacity>
+        {/* SOLO DESARROLLADOR — descomentar para acceder al editor de plantillas */}
+        {/* <TouchableOpacity style={styles.templatesBtn} onPress={() => router.push('/templates')}>
+          <Text style={styles.templatesBtnText}>📋</Text>
+        </TouchableOpacity> */}
         <TouchableOpacity style={styles.formatBtn} onPress={toggleFormat}>
           <Text style={styles.formatBtnText}>{settings.timeFormat}</Text>
         </TouchableOpacity>
@@ -451,6 +693,7 @@ export default function PatientList() {
               multiSelectMode ? toggleSelect(item.id) : enterMultiSelect(item.id)
             }
             onDelete={() => handleDelete(item.id)}
+            onShare={() => sharePatientList([item], allHospitals)}
             timeFormat={settings.timeFormat}
             selected={selectedIds.includes(item.id)}
             multiSelectMode={multiSelectMode}
@@ -485,7 +728,7 @@ export default function PatientList() {
       ) : (
         <>
           <TouchableOpacity style={styles.fabImport} onPress={handleImport}>
-            <Text style={styles.fabImportText}>↓ JSON</Text>
+            <Text style={styles.fabImportText}>↓ BHD</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.fab} onPress={() => setShowAdd(true)}>
             <Text style={styles.fabText}>+</Text>
@@ -498,7 +741,19 @@ export default function PatientList() {
         onClose={() => setShowAdd(false)}
         onSave={handleSave}
         timeFormat={settings.timeFormat}
-        hospitalId={settings.hospitalId}
+        defaultHospitalId={settings.hospitalId}
+        allHospitals={allHospitals}
+      />
+
+      <HospitalPickerModal
+        visible={showHospitalPicker}
+        hospitals={allHospitals}
+        selectedId={settings.hospitalId}
+        onSelect={async (h) => {
+          const updated = await saveSettings({ hospitalId: h.id });
+          setSettings(updated);
+        }}
+        onClose={() => setShowHospitalPicker(false)}
       />
     </View>
   );
@@ -524,7 +779,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#2563EB', paddingHorizontal: 14, paddingVertical: 6,
     borderRadius: 20,
   },
-  formatBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  formatBtnText:   { color: '#fff', fontWeight: '700', fontSize: 13 },
+  // SOLO DESARROLLADOR
+  templatesBtn:    { padding: 6 },
+  templatesBtnText:{ fontSize: 18 },
 
   list: { padding: 12, gap: 10, paddingBottom: 100 },
 
@@ -598,7 +856,7 @@ const styles = StyleSheet.create({
   multiBarDelete:   { backgroundColor: '#DC2626' },
   multiBarDisabled: { opacity: 0.4 },
 
-  // Modal
+  // Modal base
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
   modalBox: {
     backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20,
@@ -631,4 +889,60 @@ const styles = StyleSheet.create({
   hourChipSelected:  { backgroundColor: '#2563EB', borderColor: '#2563EB' },
   hourChipText:      { fontSize: 11, fontWeight: '600', color: '#374151' },
   hourChipTextSel:   { color: '#fff' },
+
+  // ─── Hospital Picker Modal (barra superior) ───────────────────────────────
+  pickerOverlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end',
+  },
+  pickerSheet: {
+    backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20,
+    padding: 20, paddingBottom: 32,
+  },
+  pickerTitle: {
+    fontSize: 16, fontWeight: '700', color: '#111827', marginBottom: 12, textAlign: 'center',
+  },
+  pickerSearch: {
+    borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 10,
+    paddingHorizontal: 14, paddingVertical: 10, fontSize: 14, color: '#111827',
+    backgroundColor: '#F9FAFB', marginBottom: 8,
+  },
+  pickerItem: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingVertical: 12, paddingHorizontal: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#F3F4F6',
+  },
+  pickerItemSelected: { backgroundColor: '#EFF6FF' },
+  pickerItemName:     { fontSize: 14, fontWeight: '600', color: '#111827' },
+  pickerItemMeta:     { fontSize: 12, color: '#9CA3AF', marginTop: 1 },
+  pickerCheck:        { fontSize: 18, color: '#2563EB', marginLeft: 8 },
+  pickerEmpty:        { textAlign: 'center', color: '#9CA3AF', paddingVertical: 24, fontSize: 14 },
+  pickerCancel: {
+    marginTop: 16, paddingVertical: 14, borderRadius: 10,
+    backgroundColor: '#F3F4F6', alignItems: 'center',
+  },
+  pickerCancelText: { fontSize: 15, fontWeight: '600', color: '#6B7280' },
+
+  // ─── Hospital Inline Picker (dentro de AddPatientModal) ──────────────────
+  hospitalPickerBtn: {
+    flexDirection: 'row', alignItems: 'center',
+    borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 8,
+    paddingHorizontal: 12, paddingVertical: 10, backgroundColor: '#F9FAFB',
+  },
+  hospitalPickerName:  { fontSize: 14, fontWeight: '600', color: '#111827' },
+  hospitalPickerMeta:  { fontSize: 12, color: '#9CA3AF', marginTop: 2 },
+  hospitalPickerArrow: { fontSize: 14, color: '#6B7280', marginLeft: 8 },
+  hospitalInlineList: {
+    borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 8,
+    marginTop: 4, overflow: 'hidden', backgroundColor: '#fff',
+  },
+  hospitalInlineSearch: {
+    borderBottomWidth: 1, borderBottomColor: '#E5E7EB',
+    paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: '#111827',
+  },
+  hospitalInlineItem: {
+    paddingHorizontal: 12, paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#F3F4F6',
+  },
+  hospitalInlineItemSel: { backgroundColor: '#EFF6FF' },
+  hospitalInlineItemName: { fontSize: 14, fontWeight: '600', color: '#111827' },
 });

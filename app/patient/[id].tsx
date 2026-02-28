@@ -6,16 +6,18 @@ import {
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as ScreenOrientation from 'expo-screen-orientation';
+import * as NavigationBar from 'expo-navigation-bar';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
 
 import { Patient, TableRow, BlockSummary } from '../../src/types';
-import { getHospital } from '../../src/hospitals';
+import { getHospitalAsync } from '../../src/hospitals';
+import { HospitalConfig } from '../../src/types/hospital';
+import { HNSJDDSM } from '../../src/hospitals/HNSJDDSM';
 import { getPatient, savePatient } from '../../src/utils/storage';
 import { getSettings, formatHora, formatDate, Settings } from '../../src/utils/settings';
 import {
   calcPAM, calcBlocks, calcBHTotal, calcDHTotal,
-  totalIngresos, totalEgresos,
 } from '../../src/utils/calculations';
 import TableCell from '../../src/components/TableCell';
 
@@ -25,49 +27,43 @@ const ROW_H    = 32;
 const HEADER_H = 36;
 const GROUP_H  = 22;
 
-// Columnas fijas (siempre visibles)
 const FIXED_N_W    = 36;
 const FIXED_HORA_W = 60;
 const FIXED_W      = FIXED_N_W + FIXED_HORA_W;
 
-// Panel de bloques: columna única vertical
-const BLOCK_W  = 140; // ancho del panel de bloques
-const BLOCK_PI_H = 22; // altura del header PI dentro de cada bloque
+const BLOCK_W    = 140;
+const BLOCK_PI_H = 22;
 
-const GROUP_LABELS: Record<string, { label: string; bg: string; textColor: string }> = {
-  sv:  { label: 'Signos vitales', bg: '#DBEAFE', textColor: '#1D4ED8' },
-  ing: { label: '💧 Ingresos',    bg: '#D1FAE5', textColor: '#065F46' },
-  egr: { label: '🚽 Egresos',     bg: '#FEF3C7', textColor: '#92400E' },
-};
-
-const CELL_BG: Record<string, string> = {
-  sv:  '#F0F9FF',
-  ing: '#F0FDF4',
-  egr: '#FFFBEB',
-};
 
 // ─── Pantalla ─────────────────────────────────────────────────────────────────
 
 export default function PatientTable() {
-  const { id }    = useLocalSearchParams<{ id: string }>();
-  const router    = useRouter();
-  const [patient, setPatient]   = useState<Patient | null>(null);
-  const [settings, setSettings] = useState<Settings>({ timeFormat: '24h' });
+  const { id }  = useLocalSearchParams<{ id: string }>();
+  const router  = useRouter();
+  const [patient, setPatient]     = useState<Patient | null>(null);
+  const [hospital, setHospital]   = useState<HospitalConfig>(HNSJDDSM);
+  const [settings, setSettings]   = useState<Settings>({ timeFormat: '24h', hospitalId: 'HNSJDDSM' });
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Refs para sincronización horizontal (header ↔ datos)
+  // Sync horizontal scroll: data → header
   const headerScrollRef = useRef<ScrollView>(null);
   const dataScrollRef   = useRef<ScrollView>(null);
 
-  // Lock landscape + hide status bar
   useEffect(() => {
     ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+    NavigationBar.setVisibilityAsync('hidden');
+    NavigationBar.setBehaviorAsync('overlay-swipe');
     return () => { ScreenOrientation.unlockAsync(); };
   }, []);
 
   useEffect(() => {
     if (id) {
-      getPatient(id).then((p) => setPatient(p ?? null));
+      getPatient(id).then(async (p) => {
+        if (p) {
+          setPatient(p);
+          setHospital(await getHospitalAsync(p.hospitalId));
+        }
+      });
       getSettings().then(setSettings);
     }
   }, [id]);
@@ -109,13 +105,11 @@ export default function PatientTable() {
     } catch { Alert.alert('Error', 'No se pudo exportar.'); }
   }
 
-  // Sincronizar scroll horizontal header ↔ datos
   function onDataScroll(e: NativeSyntheticEvent<NativeScrollEvent>) {
     headerScrollRef.current?.scrollTo({ x: e.nativeEvent.contentOffset.x, animated: false });
   }
-  function onHeaderScroll(e: NativeSyntheticEvent<NativeScrollEvent>) {
-    dataScrollRef.current?.scrollTo({ x: e.nativeEvent.contentOffset.x, animated: false });
-  }
+
+  // ─── Loading ───────────────────────────────────────────────────────────────
 
   if (!patient) {
     return <View style={styles.loading}><ActivityIndicator size="large" color="#2563EB" /></View>;
@@ -128,17 +122,18 @@ export default function PatientTable() {
   const bhTotal  = calcBHTotal(blocks);
   const dhTotal  = calcDHTotal(blocks);
   const tf       = settings.timeFormat;
-  const dataCols = getHospital(patient.hospitalId).dataCols;
+  const dataCols = hospital.dataCols;
+  const groupMap = Object.fromEntries(hospital.groups.map((g) => [g.key, g]));
+  const DATA_W   = dataCols.reduce((a, c) => a + c.width, 0);
 
-  const DATA_W = dataCols.reduce((a, c) => a + c.width, 0);
   const allBlocksHaveData = blocks.length > 0 && blocks.every(b => b.e > 0 || (b.s - b.pi) > 0);
 
-  // ── Grupo headers (para sección desplazable) ─────────────────────────────
+  // ── Encabezados desplazables ───────────────────────────────────────────────
 
   function renderGroupHeaders() {
     const groups: { label: string; bg: string; textColor: string; width: number }[] = [];
     for (const col of dataCols) {
-      const g = GROUP_LABELS[col.group];
+      const g    = groupMap[col.group];
       const last = groups[groups.length - 1];
       if (last && last.label === (g?.label ?? '')) {
         last.width += col.width;
@@ -153,7 +148,6 @@ export default function PatientTable() {
             <Text style={[styles.groupText, { color: g.textColor }]}>{g.label}</Text>
           </View>
         ))}
-        {/* Bloque panel header */}
         <View style={[styles.groupCell, { width: BLOCK_W, backgroundColor: '#EDE9FE', borderLeftWidth: 3, borderLeftColor: '#7C3AED' }]}>
           <Text style={[styles.groupText, { color: '#5B21B6' }]}>📊 Bloque (4h)</Text>
         </View>
@@ -165,11 +159,10 @@ export default function PatientTable() {
     return (
       <View style={[styles.row, { height: HEADER_H }]}>
         {dataCols.map((col) => (
-          <View key={col.key} style={[styles.colHeader, { width: col.width, backgroundColor: GROUP_LABELS[col.group]?.bg ?? '#E5E7EB' }]}>
+          <View key={col.key} style={[styles.colHeader, { width: col.width, backgroundColor: groupMap[col.group]?.bg ?? '#E5E7EB' }]}>
             <Text style={styles.colHeaderText} numberOfLines={2}>{col.label}</Text>
           </View>
         ))}
-        {/* Block col header — celda única */}
         <View style={[styles.colHeader, { width: BLOCK_W, backgroundColor: '#EDE9FE', borderLeftWidth: 3, borderLeftColor: '#7C3AED' }]}>
           <Text style={[styles.colHeaderText, { color: '#5B21B6' }]}>PI · E · S · BH · DH</Text>
         </View>
@@ -177,7 +170,7 @@ export default function PatientTable() {
     );
   }
 
-  // ── Filas de datos ────────────────────────────────────────────────────────
+  // ── Filas de datos ─────────────────────────────────────────────────────────
 
   function renderDataRow(row: TableRow, rowIndex: number) {
     const alt = rowIndex % 2 !== 0;
@@ -192,60 +185,50 @@ export default function PatientTable() {
               fieldName={col.label}
               isTA={col.isTA}
               readOnly={col.readOnly}
-              style={{ width: col.width, backgroundColor: col.readOnly ? '#EFF6FF' : (alt ? '#FAFAFA' : CELL_BG[col.group] ?? '#fff') }}
+              style={{ width: col.width, backgroundColor: col.readOnly ? '#EFF6FF' : (alt ? '#FAFAFA' : groupMap[col.group]?.cellBg ?? '#fff') }}
               onCommit={(v) => updateCell(rowIndex, col.key, v)}
             />
           );
         })}
-        {/* Empty placeholder for block columns (filled by block panel below) */}
-        <View style={{ width: BLOCK_W }} />
       </View>
     );
   }
 
-  // ── Panel de bloques — layout vertical ───────────────────────────────────
+  // ── Panel de bloques ───────────────────────────────────────────────────────
 
   function renderBlockPanel() {
     return (
       <View style={[styles.blockPanel, { width: BLOCK_W }]}>
-
         {blocks.map((b) => {
           const numRows = Math.min(4, rows.length - b.blockIndex * 4);
           const cellH   = numRows * ROW_H;
-          // PI ocupa BLOCK_PI_H, las 4 métricas se reparten el resto
           const metricH = Math.floor((cellH - BLOCK_PI_H) / 4);
           const pos     = b.bh >= 0;
 
           const metrics = [
-            { label: 'E',  val: b.e.toFixed(1),                        color: '#065F46' },
-            { label: 'S',  val: b.s.toFixed(1),                        color: '#92400E' },
-            { label: 'BH', val: (pos ? '+' : '') + b.bh.toFixed(1),    color: pos ? '#DC2626' : '#059669' },
-            { label: 'DH', val: b.dh.toFixed(2),                       color: '#1D4ED8' },
+            { label: 'E',  val: b.e.toFixed(1),                     color: '#065F46' },
+            { label: 'S',  val: b.s.toFixed(1),                     color: '#92400E' },
+            { label: 'BH', val: (pos ? '+' : '') + b.bh.toFixed(1), color: pos ? '#DC2626' : '#059669' },
+            { label: 'DH', val: b.dh.toFixed(2),                    color: '#1D4ED8' },
           ];
 
           return (
             <View key={b.blockIndex} style={[styles.blockCell, { height: cellH }]}>
-
-              {/* Cabecera PI */}
               <View style={[styles.blockPIRow, { height: BLOCK_PI_H }]}>
                 <Text style={styles.blockPIKey}>PI</Text>
                 <Text style={styles.blockPIVal}>{b.pi.toFixed(1)} mL</Text>
                 <Text style={styles.blockTime}> {formatHora(b.startHora, tf)}–{formatHora(b.endHora, tf)}</Text>
               </View>
-
-              {/* Métricas E / S / BH / DH */}
               {metrics.map(({ label, val, color }) => (
                 <View key={label} style={[styles.blockMetricRow, { height: metricH }]}>
                   <Text style={styles.blockMetricKey}>{label}</Text>
                   <Text style={[styles.blockMetricVal, { color }]} numberOfLines={1}>{val}</Text>
                 </View>
               ))}
-
             </View>
           );
         })}
 
-        {/* Totales — solo si todos los bloques tienen datos */}
         {allBlocksHaveData ? (
           <View style={[styles.blockTotals, { height: ROW_H }]}>
             <View style={styles.blockTotRow}>
@@ -264,33 +247,27 @@ export default function PatientTable() {
             <Text style={{ fontSize: 9, color: '#9CA3AF' }}>Completa todos los bloques</Text>
           </View>
         )}
-
       </View>
     );
   }
 
-  // ── Fila de totales de la sección de datos ────────────────────────────────
+  // ── Fila de totales ────────────────────────────────────────────────────────
 
   function renderTotalsRow() {
-    const totE = blocks.reduce((a, b) => a + b.e, 0);
-    const totS = blocks.reduce((a, b) => a + b.s, 0);
     return (
       <View style={[styles.row, styles.totalsRow, { height: ROW_H }]}>
-        {dataCols.map((col) => {
-          let val: string | number = '';
-          if (col.key === 'cristaloides') val = 'TOTALES';
-          return (
-            <View key={col.key} style={[styles.cell, { width: col.width }]}>
-              {val ? <Text style={styles.totalVal}>{val}</Text> : null}
-            </View>
-          );
-        })}
-        <View style={{ width: BLOCK_W }} />
+        {dataCols.map((col) => (
+          <View key={col.key} style={[styles.cell, { width: col.width }]}>
+            {col.key === 'cristaloides'
+              ? <Text style={styles.totalVal}>TOTALES</Text>
+              : null}
+          </View>
+        ))}
       </View>
     );
   }
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <View style={styles.screen}>
@@ -307,9 +284,9 @@ export default function PatientTable() {
           <Text style={styles.headerMeta}>
             {[patient.edad ? `${patient.edad}a` : null, `${peso} kg`, `SC ${sc} m²`].filter(Boolean).join(' · ')}
           </Text>
-          {patient.createdAt ? (
-            <Text style={styles.headerDate}>{formatDate(patient.createdAt)}</Text>
-          ) : null}
+          {patient.createdAt
+            ? <Text style={styles.headerDate}>{formatDate(patient.createdAt)}</Text>
+            : null}
         </View>
         <View style={styles.headerStats}>
           <Text style={[styles.headerBHVal, { color: bhTotal >= 0 ? '#FCA5A5' : '#6EE7B7' }]}>
@@ -329,61 +306,64 @@ export default function PatientTable() {
       {/* ── Tabla ── */}
       <View style={styles.tableContainer}>
 
-        {/* ── COLUMNAS FIJAS IZQUIERDA ── */}
-        <View style={styles.fixedLeft}>
-          {/* Headers fijos */}
-          <View style={[styles.fixedGroupRow, { height: GROUP_H }]}>
-            <Text style={styles.fixedGroupText}>Control</Text>
-          </View>
-          <View style={[styles.row, { height: HEADER_H }]}>
-            <View style={[styles.fixedColHeader, { width: FIXED_N_W }]}>
-              <Text style={styles.colHeaderText}>N°</Text>
+        {/* ── ENCABEZADOS FIJOS (sticky, no hacen scroll vertical) ── */}
+        <View style={styles.stickyHeaders}>
+          {/* Encabezado de la columna fija */}
+          <View style={styles.fixedColBlock}>
+            <View style={[styles.fixedGroupRow, { height: GROUP_H }]}>
+              <Text style={styles.fixedGroupText}>Control</Text>
             </View>
-            <View style={[styles.fixedColHeader, { width: FIXED_HORA_W }]}>
-              <Text style={styles.colHeaderText}>Hora</Text>
+            <View style={[styles.row, { height: HEADER_H }]}>
+              <View style={[styles.fixedColHeader, { width: FIXED_N_W }]}>
+                <Text style={styles.colHeaderText}>N°</Text>
+              </View>
+              <View style={[styles.fixedColHeader, { width: FIXED_HORA_W }]}>
+                <Text style={styles.colHeaderText}>Hora</Text>
+              </View>
             </View>
           </View>
 
-          {/* Filas de datos fijas */}
-          <ScrollView scrollEnabled={false} style={styles.fixedDataScroll}>
-            {rows.map((row, i) => (
-              <View key={i} style={[styles.row, { height: ROW_H, backgroundColor: i % 2 !== 0 ? '#FAFAFA' : '#fff' }]}>
-                <View style={[styles.fixedCell, { width: FIXED_N_W }]}>
-                  <Text style={styles.fixedCellText}>{i + 1}</Text>
-                </View>
-                <View style={[styles.fixedCell, { width: FIXED_HORA_W }]}>
-                  <Text style={styles.fixedCellText}>{formatHora(row.hora, tf)}</Text>
-                </View>
-              </View>
-            ))}
-            {/* Fila totales fija */}
-            <View style={[styles.row, styles.totalsRow, { height: ROW_H }]}>
-              <View style={[styles.fixedCell, { width: FIXED_N_W }]} />
-              <View style={[styles.fixedCell, { width: FIXED_HORA_W }]}>
-                <Text style={[styles.fixedCellText, { fontWeight: '800', fontSize: 10 }]}>TOT.</Text>
-              </View>
-            </View>
-          </ScrollView>
-        </View>
-
-        {/* ── SECCIÓN DESPLAZABLE ── */}
-        <View style={styles.scrollableSection}>
-          {/* Header desplazable (sticky top) */}
+          {/* Encabezados de columnas desplazables */}
           <ScrollView
             ref={headerScrollRef}
             horizontal
             scrollEnabled={false}
             showsHorizontalScrollIndicator={false}
-            style={{ height: GROUP_H + HEADER_H }}
+            style={{ flex: 1 }}
           >
             <View>
               {renderGroupHeaders()}
               {renderColHeaders()}
             </View>
           </ScrollView>
+        </View>
 
-          {/* Datos desplazables (horizontal + vertical) */}
-          <ScrollView nestedScrollEnabled showsVerticalScrollIndicator>
+        {/* ── DATOS (scroll vertical único para columna fija + tabla) ── */}
+        <ScrollView nestedScrollEnabled showsVerticalScrollIndicator style={{ flex: 1 }}>
+          <View style={styles.dataArea}>
+
+            {/* Columna fija de datos */}
+            <View style={styles.fixedDataCol}>
+              {rows.map((row, i) => (
+                <View key={i} style={[styles.row, { height: ROW_H, backgroundColor: i % 2 !== 0 ? '#FAFAFA' : '#fff' }]}>
+                  <View style={[styles.fixedCell, { width: FIXED_N_W }]}>
+                    <Text style={styles.fixedCellText}>{i + 1}</Text>
+                  </View>
+                  <View style={[styles.fixedCell, { width: FIXED_HORA_W }]}>
+                    <Text style={styles.fixedCellText}>{formatHora(row.hora, tf)}</Text>
+                  </View>
+                </View>
+              ))}
+              {/* Totales */}
+              <View style={[styles.row, styles.totalsRow, { height: ROW_H }]}>
+                <View style={[styles.fixedCell, { width: FIXED_N_W }]} />
+                <View style={[styles.fixedCell, { width: FIXED_HORA_W }]}>
+                  <Text style={[styles.fixedCellText, { fontWeight: '800', fontSize: 10 }]}>TOT.</Text>
+                </View>
+              </View>
+            </View>
+
+            {/* Datos desplazables horizontalmente */}
             <ScrollView
               ref={dataScrollRef}
               horizontal
@@ -391,21 +371,20 @@ export default function PatientTable() {
               showsHorizontalScrollIndicator
               onScroll={onDataScroll}
               scrollEventThrottle={16}
+              style={{ flex: 1 }}
             >
-              {/* Datos + panel de bloques lado a lado */}
               <View style={{ flexDirection: 'row' }}>
-                {/* Columnas de datos */}
                 <View style={{ width: DATA_W }}>
                   {rows.map((row, i) => renderDataRow(row, i))}
                   {renderTotalsRow()}
                 </View>
-
-                {/* Panel de bloques */}
                 {renderBlockPanel()}
               </View>
             </ScrollView>
-          </ScrollView>
-        </View>
+
+          </View>
+        </ScrollView>
+
       </View>
     </View>
   );
@@ -424,26 +403,49 @@ const styles = StyleSheet.create({
   btnBack:         { paddingHorizontal: 6, paddingVertical: 4 },
   btnBackText:     { color: '#93C5FD', fontSize: 13, fontWeight: '600' },
   headerInfo:      { flex: 1 },
-  headerCama:      { color: '#fff',     fontSize: 15, fontWeight: '800' },
-  headerNombre:    { color: '#CBD5E1',  fontSize: 11 },
-  headerMeta:      { color: '#94A3B8',  fontSize: 10 },
-  headerDate:      { color: '#64748B',  fontSize: 9, marginTop: 1 },
+  headerCama:      { color: '#fff',    fontSize: 15, fontWeight: '800' },
+  headerNombre:    { color: '#CBD5E1', fontSize: 11 },
+  headerMeta:      { color: '#94A3B8', fontSize: 10 },
+  headerDate:      { color: '#64748B', fontSize: 9,  marginTop: 1 },
   headerStats:     { alignItems: 'flex-end' },
   headerBHVal:     { fontSize: 18, fontWeight: '900' },
   headerDHVal:     { fontSize: 14, fontWeight: '700', color: '#93C5FD' },
   headerStatLabel: { color: '#94A3B8', fontSize: 9 },
-  btnExport: { backgroundColor: '#25D366', paddingHorizontal: 10, paddingVertical: 7, borderRadius: 8 },
-  btnExportText: { color: '#fff', fontWeight: '700', fontSize: 12 },
+  btnExport:       { backgroundColor: '#25D366', paddingHorizontal: 10, paddingVertical: 7, borderRadius: 8 },
+  btnExportText:   { color: '#fff', fontWeight: '700', fontSize: 12 },
 
-  // Layout
-  tableContainer: { flex: 1, flexDirection: 'row' },
+  // ── Layout principal ──
+  tableContainer: { flex: 1, flexDirection: 'column' },
 
-  // Fixed left
-  fixedLeft: {
-    width: FIXED_W, zIndex: 2,
-    borderRightWidth: 2, borderRightColor: '#374151',
-    backgroundColor: '#F3F4F6',
+  // Encabezados sticky (fuera del ScrollView vertical)
+  stickyHeaders: {
+    flexDirection: 'row',
+    height: GROUP_H + HEADER_H,
+    borderBottomWidth: 0,
   },
+  // Bloque de encabezado de la columna fija
+  fixedColBlock: {
+    width: FIXED_W,
+    backgroundColor: '#F3F4F6',
+    borderRightWidth: 2,
+    borderRightColor: '#374151',
+    zIndex: 2,
+  },
+
+  // Área de datos (columna fija + horizontal scroll, misma fila)
+  dataArea: {
+    flexDirection: 'row',
+  },
+  // Columna fija de datos
+  fixedDataCol: {
+    width: FIXED_W,
+    backgroundColor: '#F3F4F6',
+    borderRightWidth: 2,
+    borderRightColor: '#374151',
+    zIndex: 2,
+  },
+
+  // ── Encabezados ──
   fixedGroupRow: {
     backgroundColor: '#E5E7EB', justifyContent: 'center', alignItems: 'center',
     borderBottomWidth: 1, borderBottomColor: '#D1D5DB',
@@ -453,34 +455,34 @@ const styles = StyleSheet.create({
     height: HEADER_H, backgroundColor: '#E5E7EB', justifyContent: 'center', alignItems: 'center',
     borderRightWidth: 1, borderBottomWidth: 2, borderColor: '#D1D5DB',
   },
-  fixedDataScroll: { flex: 1 },
+
+  // ── Celdas fijas ──
   fixedCell: {
     height: ROW_H, justifyContent: 'center', alignItems: 'center',
     borderRightWidth: 1, borderBottomWidth: 1, borderColor: '#E5E7EB',
   },
   fixedCellText: { fontSize: 11, color: '#374151', fontVariant: ['tabular-nums'] },
 
-  // Scrollable section
-  scrollableSection: { flex: 1 },
-
-  // Headers
-  row: { flexDirection: 'row' },
+  // ── Encabezados desplazables ──
+  row:       { flexDirection: 'row' },
   groupCell: {
     height: GROUP_H, justifyContent: 'center', alignItems: 'center',
     borderRightWidth: 1, borderBottomWidth: 1, borderColor: '#D1D5DB',
   },
-  groupText: { fontSize: 9, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4 },
-  colHeader: {
+  groupText:     { fontSize: 9, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4 },
+  colHeader:     {
     height: HEADER_H, justifyContent: 'center', alignItems: 'center',
     borderRightWidth: 1, borderBottomWidth: 2, borderColor: '#D1D5DB', paddingHorizontal: 2,
   },
   colHeaderText: { fontSize: 10, fontWeight: '700', color: '#374151', textAlign: 'center' },
+
+  // ── Celdas de datos ──
   cell: {
     height: ROW_H, justifyContent: 'center', alignItems: 'center',
     borderRightWidth: 1, borderBottomWidth: 1, borderColor: '#E5E7EB',
   },
 
-  // Block panel — layout vertical
+  // ── Panel de bloques ──
   blockPanel: {
     borderLeftWidth: 3, borderLeftColor: '#7C3AED', backgroundColor: '#FAF5FF',
   },
@@ -489,7 +491,6 @@ const styles = StyleSheet.create({
     borderBottomWidth: 2, borderBottomColor: '#C4B5FD',
     overflow: 'hidden',
   },
-  // Cabecera PI dentro del bloque
   blockPIRow: {
     flexDirection: 'row', alignItems: 'center',
     backgroundColor: '#EDE9FE', paddingHorizontal: 5,
@@ -498,7 +499,6 @@ const styles = StyleSheet.create({
   blockPIKey:  { fontSize: 9, fontWeight: '800', color: '#5B21B6', width: 16 },
   blockPIVal:  { fontSize: 9, fontWeight: '700', color: '#5B21B6', flex: 1 },
   blockTime:   { fontSize: 8, color: '#7C3AED' },
-  // Filas de métricas E / S / BH / DH
   blockMetricRow: {
     flexDirection: 'row', alignItems: 'center',
     paddingHorizontal: 5,
@@ -506,7 +506,6 @@ const styles = StyleSheet.create({
   },
   blockMetricKey: { fontSize: 9, fontWeight: '700', color: '#6B7280', width: 22 },
   blockMetricVal: { fontSize: 11, fontWeight: '800', flex: 1, textAlign: 'right', fontVariant: ['tabular-nums'] },
-  // Totales
   blockTotals: {
     flexDirection: 'row', backgroundColor: '#EDE9FE',
     borderTopWidth: 2, borderTopColor: '#7C3AED',
@@ -515,6 +514,8 @@ const styles = StyleSheet.create({
   blockTotRow: { flex: 1, alignItems: 'center' },
   blockTotKey: { fontSize: 8, fontWeight: '700', color: '#374151' },
   blockTotVal: { fontSize: 11, fontWeight: '900', fontVariant: ['tabular-nums'] },
-  totalVal:    { fontSize: 11, fontWeight: '800', color: '#1E3A5F', fontVariant: ['tabular-nums'] },
-  totalsRow:   { backgroundColor: '#EFF6FF', borderTopWidth: 2, borderTopColor: '#2563EB' },
+
+  // ── Totales ──
+  totalVal:  { fontSize: 11, fontWeight: '800', color: '#1E3A5F', fontVariant: ['tabular-nums'] },
+  totalsRow: { backgroundColor: '#EFF6FF', borderTopWidth: 2, borderTopColor: '#2563EB' },
 });
