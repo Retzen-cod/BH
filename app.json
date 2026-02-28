@@ -48,15 +48,15 @@
       "package": "com.JonathanGuevara.BH",
       "intentFilters": [
         {
-          "action": "android.intent.action.VIEW",
-          "category": [
-            "android.intent.category.DEFAULT",
-            "android.intent.category.BROWSABLE"
-          ],
+          "action": "VIEW",
+          "category": ["DEFAULT"],
           "data": [
-            { "mimeType": "application/x-bhd" },
-            { "mimeType": "application/octet-stream" },
-            { "scheme": "file", "host": "*", "pathPattern": ".*\\.bhd" }
+            { "scheme": "content", "mimeType": "application/zip" },
+            { "scheme": "content", "mimeType": "application/x-zip-compressed" },
+            { "scheme": "content", "mimeType": "application/octet-stream" },
+            { "scheme": "file", "mimeType": "application/zip" },
+            { "scheme": "file", "mimeType": "application/x-zip-compressed" },
+            { "scheme": "file", "mimeType": "application/octet-stream" }
           ]
         }
       ]
@@ -66,7 +66,16 @@
     },
     "plugins": [
       "expo-router",
-      "expo-sharing"
+      "expo-sharing",
+      [
+        "expo-share-intent",
+        {
+          "androidIntentFilters": ["application/x-bhd", "application/octet-stream"],
+          "iosActivationRules": {
+            "NSExtensionActivationSupportsFileWithMaxCount": 1
+          }
+        }
+      ]
     ],
     "extra": {
       "router": {},

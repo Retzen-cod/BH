@@ -8,17 +8,19 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import * as NavigationBar from 'expo-navigation-bar';
 import * as Linking from 'expo-linking';
+import { useShareIntentContext } from 'expo-share-intent';
+import JSZip from 'jszip';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
-import * as Sharing from 'expo-sharing';
-
 import { Patient } from '../src/types';
 import { getPatients, savePatient, deletePatient, importPatient } from '../src/utils/storage';
+import { consumePendingImport } from '../src/utils/pendingImport';
 import { buildEmptyRows, calcBlocks, calcBHTotal, calcDHTotal, calcSC } from '../src/utils/calculations';
 import { getSettings, saveSettings, formatHora, formatDate, Settings } from '../src/utils/settings';
 import { getAllHospitalsAsync } from '../src/hospitals';
 import { HospitalConfig, FieldMode, PatientFieldsDef } from '../src/types/hospital';
 import { saveCustomHospital } from '../src/utils/hospitalStorage';
+import { sharePatients } from '../src/utils/share';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -38,31 +40,6 @@ function calcDuracion(start: string, end: string): number {
   let h = e - s;
   if (h <= 0) h += 24;
   return h;
-}
-
-/**
- * Comparte pacientes en formato .bhd (v2), incluyendo la config del hospital
- * para que el receptor pueda importar la tabla aunque no la tenga instalada.
- */
-async function sharePatientList(patients: Patient[], allHospitals: HospitalConfig[]) {
-  try {
-    const usedIds      = [...new Set(patients.map(p => p.hospitalId).filter(Boolean))];
-    const usedHospitals = usedIds
-      .map(id => allHospitals.find(h => h.id === id))
-      .filter(Boolean) as HospitalConfig[];
-
-    const payload = { v: 2, patients, hospitals: usedHospitals };
-    const json    = JSON.stringify(payload, null, 2);
-    const label   = patients.length === 1 ? `cama_${patients[0].cama}` : `${patients.length}_pacientes`;
-    const path    = `${FileSystem.cacheDirectory}bh_${label}.bhd`;
-    await FileSystem.writeAsStringAsync(path, json, { encoding: FileSystem.EncodingType.UTF8 });
-    const canShare = await Sharing.isAvailableAsync();
-    if (canShare) {
-      await Sharing.shareAsync(path, { mimeType: 'application/x-bhd', dialogTitle: `BH ${label}` });
-    } else {
-      Alert.alert('No disponible', 'Compartir no está disponible en este dispositivo.');
-    }
-  } catch { Alert.alert('Error', 'No se pudo compartir.'); }
 }
 
 /**
@@ -519,16 +496,21 @@ export default function PatientList() {
   const [allHospitals, setAllHospitals]       = useState<HospitalConfig[]>([]);
   const [showHospitalPicker, setShowHospitalPicker] = useState(false);
 
+  const loadData = useCallback(async () => {
+    const [pts, hosp] = await Promise.all([getPatients(), getAllHospitalsAsync()]);
+    setPatients(pts);
+    setAllHospitals(hosp);
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
-      getPatients().then(setPatients);
+      loadData();
       getSettings().then(setSettings);
-      getAllHospitalsAsync().then(setAllHospitals);
       setMulti(false);
       setSelectedIds([]);
       NavigationBar.setVisibilityAsync('hidden');
       NavigationBar.setBehaviorAsync('overlay-swipe');
-    }, [])
+    }, [loadData])
   );
 
   // ─── Importar hospitales + pacientes desde un .bhd ────────────────────────
@@ -553,12 +535,7 @@ export default function PatientList() {
       if (p.id && p.cama && Array.isArray(p.rows)) await importPatient(p);
     }
 
-    const [updatedPatients, updatedHospitals] = await Promise.all([
-      getPatients(),
-      getAllHospitalsAsync(),
-    ]);
-    setPatients(updatedPatients);
-    setAllHospitals(updatedHospitals);
+    await loadData();
 
     const msg = list.length === 1
       ? `Cama ${list[0].cama} importada.`
@@ -569,16 +546,76 @@ export default function PatientList() {
   async function importFromUrl(url: string) {
     if (!url || (!url.startsWith('content://') && !url.startsWith('file://'))) return;
     try {
-      const raw = await FileSystem.readAsStringAsync(url);
-      await importBHDData(raw);
-    } catch { /* URL no es un archivo BHD válido — ignorar */ }
+      // content:// URIs de otros apps no son legibles directamente; copiar al cache primero
+      let localUrl = url;
+      if (url.startsWith('content://')) {
+        const dest = `${FileSystem.cacheDirectory}import_${Date.now()}.bhd`;
+        await FileSystem.copyAsync({ from: url, to: dest });
+        localUrl = dest;
+      }
+
+      // Intentar como JSON plano primero (formato legacy)
+      try {
+        const raw = await FileSystem.readAsStringAsync(localUrl, { encoding: FileSystem.EncodingType.UTF8 });
+        JSON.parse(raw);
+        await importBHDData(raw);
+        return;
+      } catch {}
+
+      // Intentar como zip (.bhd nuevo formato)
+      const base64 = await FileSystem.readAsStringAsync(localUrl, { encoding: FileSystem.EncodingType.Base64 });
+      const zip = await JSZip.loadAsync(base64, { base64: true });
+
+      const hospitalsFile = zip.file('hospitals.json');
+      const hospitals: HospitalConfig[] = hospitalsFile
+        ? JSON.parse(await hospitalsFile.async('string'))
+        : [];
+
+      const patients: Patient[] = [];
+      for (const filename of Object.keys(zip.files)) {
+        if (filename === 'hospitals.json' || zip.files[filename].dir) continue;
+        try {
+          const content = await zip.files[filename].async('string');
+          patients.push(JSON.parse(content) as Patient);
+        } catch {}
+      }
+
+      if (patients.length > 0) {
+        await importBHDData(JSON.stringify({ v: 2, patients, hospitals }));
+      }
+    } catch { Alert.alert('Error', 'No se pudo importar el archivo.'); }
   }
 
-  // Al abrir la app desde un archivo .bhd (ej. desde WhatsApp)
-  const initialUrl = Linking.useURL();
+  // Al abrir un .bhd desde WhatsApp (ACTION_VIEW)
   React.useEffect(() => {
-    if (initialUrl) importFromUrl(initialUrl);
-  }, [initialUrl]);
+    // +not-found.tsx captura la URL antes de redirigir aquí; si no, fallback a getInitialURL
+    const pending = consumePendingImport();
+    if (pending) {
+      importFromUrl(pending);
+    } else {
+      Linking.getInitialURL().then(url => {
+        if (url?.startsWith('content://') || url?.startsWith('file://')) {
+          importFromUrl(url);
+        }
+      });
+    }
+    const sub = Linking.addEventListener('url', ({ url }) => {
+      if (url.startsWith('content://') || url.startsWith('file://')) {
+        importFromUrl(url);
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
+  // Al usar "Compartir" desde WhatsApp u otra app (ACTION_SEND)
+  const { shareIntent, resetShareIntent } = useShareIntentContext();
+  React.useEffect(() => {
+    const uri = shareIntent?.files?.[0]?.path;
+    if (uri) {
+      importFromUrl(uri);
+      resetShareIntent();
+    }
+  }, [shareIntent]);
 
   async function handleSave(p: Patient) {
     await savePatient(p);
@@ -599,8 +636,7 @@ export default function PatientList() {
     try {
       const result = await DocumentPicker.getDocumentAsync({ type: '*/*', copyToCacheDirectory: true });
       if (result.canceled) return;
-      const raw = await FileSystem.readAsStringAsync(result.assets[0].uri);
-      await importBHDData(raw);
+      await importFromUrl(result.assets[0].uri);
     } catch { Alert.alert('Error', 'No se pudo importar.'); }
   }
 
@@ -645,7 +681,7 @@ export default function PatientList() {
 
   async function bulkShare() {
     const sel = patients.filter((p) => selectedIds.includes(p.id));
-    await sharePatientList(sel, allHospitals);
+    await sharePatients(sel, allHospitals);
   }
 
   // ─── Render ────────────────────────────────────────────────────────────────
@@ -693,7 +729,7 @@ export default function PatientList() {
               multiSelectMode ? toggleSelect(item.id) : enterMultiSelect(item.id)
             }
             onDelete={() => handleDelete(item.id)}
-            onShare={() => sharePatientList([item], allHospitals)}
+            onShare={() => sharePatients([item], allHospitals)}
             timeFormat={settings.timeFormat}
             selected={selectedIds.includes(item.id)}
             multiSelectMode={multiSelectMode}

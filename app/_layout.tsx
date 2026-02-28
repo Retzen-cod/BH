@@ -1,9 +1,12 @@
 import { Stack } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StyleSheet } from 'react-native';
+import { ShareIntentProvider } from 'expo-share-intent';
 
 export default function RootLayout() {
+
   return (
+    <ShareIntentProvider>
     <GestureHandlerRootView style={styles.root}>
       <Stack>
         <Stack.Screen
@@ -20,6 +23,7 @@ export default function RootLayout() {
         />
       </Stack>
     </GestureHandlerRootView>
+    </ShareIntentProvider>
   );
 }
 

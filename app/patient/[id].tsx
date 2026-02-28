@@ -7,14 +7,12 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import * as NavigationBar from 'expo-navigation-bar';
-import * as Sharing from 'expo-sharing';
-import * as FileSystem from 'expo-file-system/legacy';
-
 import { Patient, TableRow, BlockSummary } from '../../src/types';
 import { getHospitalAsync } from '../../src/hospitals';
 import { HospitalConfig } from '../../src/types/hospital';
 import { HNSJDDSM } from '../../src/hospitals/HNSJDDSM';
 import { getPatient, savePatient } from '../../src/utils/storage';
+import { sharePatients } from '../../src/utils/share';
 import { getSettings, formatHora, formatDate, Settings } from '../../src/utils/settings';
 import {
   calcPAM, calcBlocks, calcBHTotal, calcDHTotal,
@@ -92,17 +90,7 @@ export default function PatientTable() {
 
   async function handleExport() {
     if (!patient) return;
-    try {
-      const json = JSON.stringify(patient, null, 2);
-      const path = `${FileSystem.cacheDirectory}cama_${patient.cama}_bh.json`;
-      await FileSystem.writeAsStringAsync(path, json, { encoding: FileSystem.EncodingType.UTF8 });
-      const canShare = await Sharing.isAvailableAsync();
-      if (canShare) {
-        await Sharing.shareAsync(path, { mimeType: 'application/json', dialogTitle: `BH Cama ${patient.cama}` });
-      } else {
-        await Share.share({ message: json, title: `BH Cama ${patient.cama}` });
-      }
-    } catch { Alert.alert('Error', 'No se pudo exportar.'); }
+    await sharePatients([patient], [hospital]);
   }
 
   function onDataScroll(e: NativeSyntheticEvent<NativeScrollEvent>) {
