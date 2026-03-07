@@ -22,12 +22,16 @@ export function calcSC(peso: number): number {
 
 export function totalIngresos(row: TableRow): number {
   return (
-    (row.cristaloides ?? 0) + (row.coloides ?? 0) + (row.norepinefrina ?? 0) +
-    (row.dobutamina ?? 0) + (row.dopamina ?? 0) + (row.vasopresina ?? 0) +
+    (row.cristaloides ?? 0) + (row.coloides ?? 0) +
+    (row.dopamina ?? 0) + (row.dobutamina ?? 0) + (row.norepinefrina ?? 0) +
+    (row.vasopresina ?? 0) +
+    // bucket sedantes + todos sus alternates individuales
+    (row.sedantes ?? 0) +
     (row.ketamina ?? 0) + (row.fentanilo ?? 0) + (row.remifentanilo ?? 0) +
-    (row.midazolam ?? 0) + (row.cisatracurio ?? 0) + (row.dextrosa ?? 0) +
-    (row.medicamentos ?? 0) + (row.enteral ?? 0) + (row.hemoderivados ?? 0) +
-    (row.otrosIngresos ?? 0)
+    (row.midazolam ?? 0) + (row.cisatracurio ?? 0) +
+    (row.insulina ?? 0) +
+    (row.medicamentos ?? 0) + (row.dextrosa ?? 0) +
+    (row.enteral ?? 0) + (row.hemoderivados ?? 0) + (row.otrosIngresos ?? 0)
   );
 }
 
