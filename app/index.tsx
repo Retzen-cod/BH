@@ -2,6 +2,7 @@ import React, { useState, useCallback } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
   Alert, Modal, TextInput, KeyboardAvoidingView, Platform, ScrollView,
+  useColorScheme,
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -10,6 +11,7 @@ import * as NavigationBar from 'expo-navigation-bar';
 import * as Linking from 'expo-linking';
 import { useShareIntentContext } from 'expo-share-intent';
 import JSZip from 'jszip';
+import { v4 as uuidv4 } from 'uuid';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Patient } from '../src/types';
@@ -48,15 +50,13 @@ function calcDuracion(start: string, end: string): number {
  */
 function parseBHD(raw: string): { patients: Patient[]; hospitals: HospitalConfig[] } {
   const data = JSON.parse(raw);
-  if (data && data.v === 2 && Array.isArray(data.patients)) {
-    return {
-      patients: data.patients as Patient[],
-      hospitals: Array.isArray(data.hospitals) ? data.hospitals as HospitalConfig[] : [],
-    };
+  if (!data || data.v !== 2 || !Array.isArray(data.patients)) {
+    throw new Error('Formato .bhd no reconocido. Se requiere formato v2.');
   }
-  // Formato antiguo: Patient o Patient[]
-  const patients: Patient[] = Array.isArray(data) ? data : [data];
-  return { patients, hospitals: [] };
+  return {
+    patients:  data.patients  as Patient[],
+    hospitals: Array.isArray(data.hospitals) ? data.hospitals as HospitalConfig[] : [],
+  };
 }
 
 // ─── HourSelector ────────────────────────────────────────────────────────────
@@ -189,7 +189,6 @@ function AddPatientModal({
   const [peso, setPeso]         = useState('');
   const [talla, setTalla]       = useState('');
   const [startHora, setStart]   = useState('07:00');
-  const [endHora, setEnd]       = useState('07:00');
   const [selHospitalId, setSelHospitalId] = useState(defaultHospitalId);
   const [showHPicker, setShowHPicker]     = useState(false);
   const [hQuery, setHQuery]               = useState('');
@@ -209,7 +208,7 @@ function AddPatientModal({
 
   function reset() {
     setCama(''); setNombre(''); setEdad(''); setRegistro('');
-    setPeso(''); setTalla(''); setStart('07:00'); setEnd('07:00');
+    setPeso(''); setTalla(''); setStart('07:00');
     setShowHPicker(false); setHQuery('');
   }
 
@@ -239,7 +238,7 @@ function AddPatientModal({
     const t  = Number(talla);
     const sc = calcSC(p);
     const patient: Patient = {
-      id: Date.now().toString(),
+      id: uuidv4(),
       cama: cama.trim(),
       nombre: nombre.trim() || undefined,
       edad: edad ? Number(edad) : undefined,
@@ -248,17 +247,15 @@ function AddPatientModal({
       talla: talla ? t : undefined,
       sc,
       startHora,
-      endHora,
+      endHora: startHora,
       hospitalId: selHospital?.id ?? defaultHospitalId,
       createdAt: new Date().toISOString(),
-      rows: buildEmptyRows(startHora, endHora),
+      rows: buildEmptyRows(startHora, startHora),
     };
     onSave(patient);
     reset();
     onClose();
   }
-
-  const dur = calcDuracion(startHora, endHora);
 
   return (
     <Modal visible={visible} transparent animationType="slide">
@@ -358,11 +355,12 @@ function AddPatientModal({
             />
           )}
 
-          <HourSelector label="Inicio del balance" value={startHora} onChange={setStart} timeFormat={timeFormat} />
-          <HourSelector label="Fin del balance"    value={endHora}   onChange={setEnd}   timeFormat={timeFormat} />
+          <HourSelector label="Inicio del balance (24h fijo)" value={startHora} onChange={setStart} timeFormat={timeFormat} />
 
           <Text style={styles.durPreview}>
-            Duración: {dur}h · {Math.ceil(dur / 4)} bloques de 4h
+            24h · 6 bloques de 4h · Fin: {timeFormat === '24h'
+              ? startHora
+              : (() => { const h = parseInt(startHora, 10); return `${h % 12 || 12}:00 ${h < 12 ? 'AM' : 'PM'}`; })()}
           </Text>
 
           <View style={styles.modalActions}>
@@ -404,30 +402,51 @@ function Field({
 
 // ─── Card de paciente ─────────────────────────────────────────────────────────
 
+const CARD_FIELD_FORMATTERS: Record<string, (p: Patient) => string | null> = {
+  nombre:   (p) => p.nombre   ?? null,
+  edad:     (p) => p.edad     != null ? `${p.edad} a`       : null,
+  peso:     (p) => p.peso     != null ? `${p.peso} kg`      : null,
+  sc:       (p) => p.sc       != null ? `SC ${p.sc} m²`     : null,
+  registro: (p) => p.registro  ? `#${p.registro}`           : null,
+  talla:    (p) => p.talla    != null ? `${p.talla} cm`     : null,
+};
+
+const DEFAULT_CARD_PREVIEW = ['edad', 'peso', 'sc'];
+
 function PatientCard({
-  patient, onPress, onLongPress, onDelete, onShare, timeFormat, selected, multiSelectMode,
+  patient, hospital, onPress, onLongPress, onDelete, onShare, onEdit,
+  timeFormat, selected, multiSelectMode,
 }: {
   patient: Patient;
+  hospital: HospitalConfig | undefined;
   onPress: () => void;
   onLongPress: () => void;
   onDelete: () => void;
   onShare: () => void;
+  onEdit: () => void;
   timeFormat: '12h' | '24h';
   selected: boolean;
   multiSelectMode: boolean;
 }) {
-  const blocks     = calcBlocks(patient.rows, patient.peso ?? 70, patient.sc ?? 1.7);
-  const bh         = calcBHTotal(blocks);
-  const dh         = calcDHTotal(blocks);
+  const enabledBlocks = calcBlocks(patient.rows, patient.peso ?? 70, patient.sc ?? 1.7)
+    .filter(b => !(patient.disabledBlocks ?? []).includes(b.blockIndex));
+  const bh         = calcBHTotal(enabledBlocks);
+  const dh         = calcDHTotal(enabledBlocks);
   const startLabel = formatHora(patient.startHora ?? '07:00', timeFormat);
   const endLabel   = formatHora(patient.endHora   ?? '07:00', timeFormat);
 
+  const previewKeys = hospital?.cardPreview ?? DEFAULT_CARD_PREVIEW;
+  const metaItems   = previewKeys
+    .map(key => CARD_FIELD_FORMATTERS[key]?.(patient) ?? null)
+    .filter(Boolean) as string[];
+
   function showMenu() {
     Alert.alert(`Cama ${patient.cama}`, 'Selecciona una acción', [
+      { text: '✎ Editar',    onPress: onEdit },
       { text: '↑ Compartir', onPress: onShare },
       { text: '🗑 Eliminar',  onPress: onDelete, style: 'destructive' },
       { text: 'Cancelar',    style: 'cancel' },
-    ]);
+    ], { cancelable: true });
   }
 
   return (
@@ -452,13 +471,9 @@ function PatientCard({
           ) : null}
         </View>
         {patient.nombre ? <Text style={styles.cardNombre}>{patient.nombre}</Text> : null}
-        <Text style={styles.cardMeta}>
-          {[
-            patient.edad ? `${patient.edad} a` : null,
-            patient.peso ? `${patient.peso} kg` : null,
-            patient.sc   ? `SC ${patient.sc} m²` : null,
-          ].filter(Boolean).join(' · ')}
-        </Text>
+        {metaItems.length > 0 && (
+          <Text style={styles.cardMeta}>{metaItems.join(' · ')}</Text>
+        )}
         <Text style={styles.cardHorario}>{startLabel} → {endLabel}</Text>
       </View>
 
@@ -482,19 +497,134 @@ function PatientCard({
   );
 }
 
+// ─── Modal editar paciente ────────────────────────────────────────────────────
+
+function EditPatientModal({
+  visible, patient, onClose, onSave, allHospitals, timeFormat,
+}: {
+  visible: boolean;
+  patient: Patient | null;
+  onClose: () => void;
+  onSave: (p: Patient) => void;
+  allHospitals: HospitalConfig[];
+  timeFormat: '12h' | '24h';
+}) {
+  const [cama,      setCama]      = useState('');
+  const [nombre,    setNombre]    = useState('');
+  const [edad,      setEdad]      = useState('');
+  const [registro,  setRegistro]  = useState('');
+  const [peso,      setPeso]      = useState('');
+  const [talla,     setTalla]     = useState('');
+  const [startHora, setStartHora] = useState('07:00');
+
+  React.useEffect(() => {
+    if (!patient) return;
+    setCama(patient.cama);
+    setNombre(patient.nombre    ?? '');
+    setEdad(patient.edad        != null ? String(patient.edad)  : '');
+    setRegistro(patient.registro ?? '');
+    setPeso(patient.peso        != null ? String(patient.peso)  : '');
+    setTalla(patient.talla      != null ? String(patient.talla) : '');
+    setStartHora(patient.startHora ?? '07:00');
+  }, [patient]);
+
+  const hospital = allHospitals.find(h => h.id === patient?.hospitalId);
+  const pf       = hospital?.patientFields;
+
+  function handleSave() {
+    if (!patient) return;
+    if (!cama.trim()) {
+      Alert.alert('Campo requerido', 'El N° de cama es obligatorio.'); return;
+    }
+    if (!peso || isNaN(Number(peso)) || Number(peso) <= 0) {
+      Alert.alert('Campo requerido', 'El peso es obligatorio.'); return;
+    }
+    const p = Number(peso);
+    const t = Number(talla);
+    onSave({
+      ...patient,
+      cama:      cama.trim(),
+      nombre:    nombre.trim()   || undefined,
+      edad:      edad             ? Number(edad) : undefined,
+      registro:  registro.trim() || undefined,
+      peso:      p,
+      talla:     talla            ? t : undefined,
+      sc:        calcSC(p),
+      startHora,
+      endHora:   startHora,
+    });
+    onClose();
+  }
+
+  return (
+    <Modal visible={visible} transparent animationType="slide">
+      <KeyboardAvoidingView
+        style={styles.modalOverlay}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <ScrollView style={styles.modalBox} keyboardShouldPersistTaps="handled">
+          <Text style={styles.modalTitle}>Editar expediente</Text>
+          {hospital && (
+            <Text style={styles.modalHospital}>{hospital.name}</Text>
+          )}
+
+          <Field label="N° Cama *"  value={cama}  onChange={setCama} />
+          <Field label="Peso (kg) *" value={peso} onChange={setPeso} keyboardType="decimal-pad" />
+
+          {peso ? (
+            <Text style={styles.scPreview}>
+              SC ≈ {calcSC(Number(peso)).toFixed(2)} m²
+            </Text>
+          ) : null}
+
+          {fieldMode(pf, 'nombre') !== 'hidden' && (
+            <Field label="Nombre / Iniciales" value={nombre} onChange={setNombre} />
+          )}
+          {fieldMode(pf, 'edad') !== 'hidden' && (
+            <Field label="Edad" value={edad} onChange={setEdad} keyboardType="numeric" />
+          )}
+          {fieldMode(pf, 'registro') !== 'hidden' && (
+            <Field label="N° Registro" value={registro} onChange={setRegistro} />
+          )}
+          {fieldMode(pf, 'talla') !== 'hidden' && (
+            <Field label="Talla (cm)" value={talla} onChange={setTalla} keyboardType="decimal-pad" />
+          )}
+
+          <HourSelector label="Inicio del balance (24h fijo)" value={startHora} onChange={setStartHora} timeFormat={timeFormat} />
+
+          <View style={styles.modalActions}>
+            <TouchableOpacity style={styles.btnCancel} onPress={onClose}>
+              <Text style={styles.btnCancelText}>Cancelar</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.btnSave} onPress={handleSave}>
+              <Text style={styles.btnSaveText}>Guardar</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={{ height: 32 }} />
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
 // ─── Pantalla principal ───────────────────────────────────────────────────────
 
 export default function PatientList() {
-  const router = useRouter();
-  const insets = useSafeAreaInsets();
+  const router      = useRouter();
+  const insets      = useSafeAreaInsets();
+  const colorScheme = useColorScheme();
+  const isDark      = colorScheme === 'dark';
+  const statusBg    = isDark ? '#111827' : '#ffffff';
 
   const [patients, setPatients]               = useState<Patient[]>([]);
   const [showAdd, setShowAdd]                 = useState(false);
+  const [editingPatient, setEditingPatient]   = useState<Patient | null>(null);
   const [settings, setSettings]               = useState<Settings>({ timeFormat: '24h', hospitalId: 'HNSJDDSM' });
   const [multiSelectMode, setMulti]           = useState(false);
   const [selectedIds, setSelectedIds]         = useState<string[]>([]);
   const [allHospitals, setAllHospitals]       = useState<HospitalConfig[]>([]);
   const [showHospitalPicker, setShowHospitalPicker] = useState(false);
+  const [searchQuery, setSearchQuery]         = useState('');
 
   const loadData = useCallback(async () => {
     const [pts, hosp] = await Promise.all([getPatients(), getAllHospitalsAsync()]);
@@ -509,7 +639,6 @@ export default function PatientList() {
       setMulti(false);
       setSelectedIds([]);
       NavigationBar.setVisibilityAsync('hidden');
-      NavigationBar.setBehaviorAsync('overlay-swipe');
     }, [loadData])
   );
 
@@ -531,16 +660,51 @@ export default function PatientList() {
       if (!exists) await saveCustomHospital(h);
     }
 
-    // Importar pacientes
+    // Importar pacientes — con resolución de conflictos por ID
+    const existing = await getPatients();
+    let imported = 0;
+
     for (const p of list) {
-      if (p.id && p.cama && Array.isArray(p.rows)) await importPatient(p);
+      if (!p.id || !p.cama || !Array.isArray(p.rows)) continue;
+
+      const conflict = existing.find(e => e.id === p.id);
+      if (conflict) {
+        const action = await new Promise<'overwrite' | 'keep_both' | 'skip'>((resolve) => {
+          const existingDate = formatDate(conflict.createdAt);
+          const incomingDate = formatDate(p.createdAt);
+          Alert.alert(
+            'Conflicto de expediente',
+            `Cama ${p.cama}${p.nombre ? ` — ${p.nombre}` : ''} ya existe en este dispositivo.\n\nExistente: ${existingDate}\nEntrante:  ${incomingDate}`,
+            [
+              { text: 'Sobreescribir',      onPress: () => resolve('overwrite')  },
+              { text: 'Conservar ambos',     onPress: () => resolve('keep_both')  },
+              { text: 'Conservar existente', onPress: () => resolve('skip'), style: 'cancel' },
+            ],
+            { cancelable: false },
+          );
+        });
+
+        if (action === 'overwrite') {
+          await importPatient(p);
+          imported++;
+        } else if (action === 'keep_both') {
+          await importPatient({ ...p, id: uuidv4() });
+          imported++;
+        }
+        // 'skip': no hacer nada
+      } else {
+        await importPatient(p);
+        imported++;
+      }
     }
 
     await loadData();
 
-    const msg = list.length === 1
-      ? `Cama ${list[0].cama} importada.`
-      : `${list.length} pacientes importados.`;
+    const msg = imported === 0
+      ? 'No se importaron expedientes.'
+      : imported === 1
+        ? `Cama ${list[0].cama} importada.`
+        : `${imported} pacientes importados.`;
     Alert.alert('Importado', msg);
   }
 
@@ -623,6 +787,11 @@ export default function PatientList() {
     setPatients(await getPatients());
   }
 
+  async function handleEdit(p: Patient) {
+    await savePatient(p);
+    setPatients(await getPatients());
+  }
+
   async function handleDelete(id: string) {
     Alert.alert('Eliminar paciente', '¿Confirmas?', [
       { text: 'Cancelar', style: 'cancel' },
@@ -665,6 +834,14 @@ export default function PatientList() {
     setSelectedIds([]);
   }
 
+  function toggleSelectAll() {
+    if (selectedIds.length === filteredPatients.length) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(filteredPatients.map(p => p.id));
+    }
+  }
+
   async function bulkDelete() {
     const n = selectedIds.length;
     Alert.alert(`Eliminar ${n} paciente${n !== 1 ? 's' : ''}`, '¿Confirmas?', [
@@ -687,11 +864,19 @@ export default function PatientList() {
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
+  const q = searchQuery.trim().toLowerCase();
+  const filteredPatients = q
+    ? patients.filter(p =>
+        p.cama.toLowerCase().includes(q) ||
+        p.nombre?.toLowerCase().includes(q) ||
+        p.registro?.toLowerCase().includes(q)
+      )
+    : patients;
+
   return (
     <View style={styles.screen}>
-      <StatusBar style="dark" backgroundColor="#ffffff" translucent={false} />
-      {/* Espacio para status bar */}
-      <View style={{ height: insets.top, backgroundColor: '#fff' }} />
+      <StatusBar style={isDark ? 'light' : 'dark'} backgroundColor={statusBg} translucent={false} />
+      <View style={{ height: insets.top, backgroundColor: statusBg }} />
 
       {/* Barra superior */}
       <View style={styles.topBar}>
@@ -710,19 +895,40 @@ export default function PatientList() {
         </TouchableOpacity>
       </View>
 
+      {/* Buscador */}
+      <View style={styles.searchBar}>
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Buscar por cama, nombre o registro..."
+          placeholderTextColor="#9CA3AF"
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          clearButtonMode="while-editing"
+          autoCapitalize="none"
+        />
+      </View>
+
       <FlatList
-        data={patients}
+        data={filteredPatients}
         keyExtractor={(p) => p.id}
+        style={{ flex: 1 }}
         contentContainerStyle={styles.list}
         ListEmptyComponent={
           <View style={styles.empty}>
-            <Text style={styles.emptyText}>No hay pacientes.</Text>
-            <Text style={styles.emptySubtext}>Toca "+" para agregar uno.</Text>
+            {q ? (
+              <Text style={styles.emptyText}>Sin resultados para "{q}".</Text>
+            ) : (
+              <>
+                <Text style={styles.emptyText}>No hay pacientes.</Text>
+                <Text style={styles.emptySubtext}>Toca "+" para agregar uno.</Text>
+              </>
+            )}
           </View>
         }
         renderItem={({ item }) => (
           <PatientCard
             patient={item}
+            hospital={allHospitals.find(h => h.id === item.hospitalId)}
             onPress={() =>
               multiSelectMode ? toggleSelect(item.id) : router.push(`/patient/${item.id}`)
             }
@@ -731,6 +937,7 @@ export default function PatientList() {
             }
             onDelete={() => handleDelete(item.id)}
             onShare={() => sharePatients([item], allHospitals)}
+            onEdit={() => setEditingPatient(item)}
             timeFormat={settings.timeFormat}
             selected={selectedIds.includes(item.id)}
             multiSelectMode={multiSelectMode}
@@ -743,6 +950,11 @@ export default function PatientList() {
         <View style={styles.multiBar}>
           <TouchableOpacity style={styles.multiBarCancel} onPress={exitMultiSelect}>
             <Text style={styles.multiBarCancelText}>✕</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.multiBarSelectAll} onPress={toggleSelectAll}>
+            <Text style={styles.multiBarSelectAllText}>
+              {selectedIds.length === filteredPatients.length ? 'Ninguno' : 'Todos'}
+            </Text>
           </TouchableOpacity>
           <Text style={styles.multiBarCount}>
             {selectedIds.length} seleccionado{selectedIds.length !== 1 ? 's' : ''}
@@ -772,6 +984,15 @@ export default function PatientList() {
           </TouchableOpacity>
         </>
       )}
+
+      <EditPatientModal
+        visible={editingPatient !== null}
+        patient={editingPatient}
+        onClose={() => setEditingPatient(null)}
+        onSave={handleEdit}
+        allHospitals={allHospitals}
+        timeFormat={settings.timeFormat}
+      />
 
       <AddPatientModal
         visible={showAdd}
@@ -821,7 +1042,7 @@ const styles = StyleSheet.create({
   templatesBtn:    { padding: 6 },
   templatesBtnText:{ fontSize: 18 },
 
-  list: { padding: 12, gap: 10, paddingBottom: 100 },
+  list: { padding: 12, gap: 10, paddingBottom: 90 },
 
   card: {
     backgroundColor: '#fff', borderRadius: 12, padding: 16,
@@ -872,6 +1093,23 @@ const styles = StyleSheet.create({
   },
   fabImportText: { color: '#fff', fontWeight: '700', fontSize: 13 },
 
+  // Buscador
+  searchBar: {
+    backgroundColor: '#fff',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#E5E7EB',
+  },
+  searchInput: {
+    backgroundColor: '#F3F4F6',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    fontSize: 14,
+    color: '#111827',
+  },
+
   // Multi-select bar
   multiBar: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
@@ -883,8 +1121,10 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.15)',
     justifyContent: 'center', alignItems: 'center',
   },
-  multiBarCancelText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  multiBarCount: { flex: 1, color: '#93C5FD', fontWeight: '600', fontSize: 14, textAlign: 'center' },
+  multiBarCancelText:    { color: '#fff', fontSize: 16, fontWeight: '700' },
+  multiBarSelectAll:     { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.15)' },
+  multiBarSelectAllText: { color: '#93C5FD', fontSize: 12, fontWeight: '700' },
+  multiBarCount:         { flex: 1, color: '#93C5FD', fontWeight: '600', fontSize: 14, textAlign: 'center' },
   multiBarBtn: {
     paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8,
   },
