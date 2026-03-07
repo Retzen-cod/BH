@@ -1,14 +1,17 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { TouchableOpacity, Text, StyleSheet, ViewStyle } from 'react-native';
 import NumericSlashKeyboard from './NumericSlashKeyboard';
 
 interface Props {
   value?: string | number;
   fieldName?: string;
-  isTA?: boolean;        // usa teclado con '/'
+  isTA?: boolean;
   readOnly?: boolean;
+  frozen?: boolean;          // selección activa — taps no abren teclado
   style?: ViewStyle;
   onCommit: (val: string) => void;
+  onLongPressCell?: () => void;
+  onTripleTap?: () => void;
 }
 
 export default function TableCell({
@@ -16,23 +19,47 @@ export default function TableCell({
   fieldName,
   isTA = false,
   readOnly = false,
+  frozen = false,
   style,
   onCommit,
+  onLongPressCell,
+  onTripleTap,
 }: Props) {
   const [open, setOpen] = useState(false);
   const display = value !== undefined && value !== '' ? String(value) : '';
 
-  function handleConfirm(val: string) {
-    setOpen(false);
-    onCommit(val);
+  // ── Triple toque: detección manual para no retrasar el toque simple ────────
+  const tapCount = useRef(0);
+  const tapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function handlePress() {
+    if (readOnly || frozen) return;
+
+    tapCount.current += 1;
+    if (tapTimer.current) clearTimeout(tapTimer.current);
+
+    if (tapCount.current >= 3) {
+      tapCount.current = 0;
+      onTripleTap?.();
+      return;
+    }
+
+    // Esperar 300 ms para detectar si hay más toques
+    tapTimer.current = setTimeout(() => {
+      const c = tapCount.current;
+      tapCount.current = 0;
+      if (c === 1) setOpen(true);
+    }, 300);
   }
 
   return (
     <>
       <TouchableOpacity
         style={[styles.cell, readOnly && styles.cellReadOnly, style]}
-        onPress={() => !readOnly && setOpen(true)}
-        activeOpacity={readOnly ? 1 : 0.6}
+        onPress={handlePress}
+        onLongPress={onLongPressCell}
+        delayLongPress={400}
+        activeOpacity={readOnly || frozen ? 1 : 0.6}
       >
         <Text style={[styles.text, !display && styles.placeholder]} numberOfLines={1}>
           {display || (readOnly ? '' : '·')}
@@ -44,7 +71,7 @@ export default function TableCell({
         value={display}
         title={fieldName}
         allowSlash={isTA}
-        onConfirm={handleConfirm}
+        onConfirm={(v) => { setOpen(false); onCommit(v); }}
         onCancel={() => setOpen(false)}
       />
     </>
