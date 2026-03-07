@@ -39,3 +39,12 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# local env files (catch-all)
+.env
+
+# logs
+*.log
+
+# Obsidian vault (notas locales, no código)
+BH-App/
