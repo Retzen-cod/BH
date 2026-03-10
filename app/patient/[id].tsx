@@ -3,6 +3,7 @@ import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import * as NavigationBar from 'expo-navigation-bar';
+import { useKeepAwake } from 'expo-keep-awake';
 import { Patient, TableRow } from '../../src/types';
 import { HospitalConfig } from '../../src/types/hospital';
 import { getHospitalAsync } from '../../src/hospitals';
@@ -21,6 +22,7 @@ export default function PatientScreen() {
   const [hospital, setHospital] = useState<HospitalConfig | null>(null);
   const [settings, setSettings] = useState<Settings>({ timeFormat: '24h', hospitalId: 'HNSJDDSM' });
 
+  useKeepAwake();
   const rowsHistory = useUndoRedo<TableRow[]>([]);
   const saveTimer   = useRef<ReturnType<typeof setTimeout> | null>(null);
 

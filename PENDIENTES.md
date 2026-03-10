@@ -52,6 +52,9 @@
 
 ## Pendientes
 
+### Bugs
+- [ ] **Crash al crear nuevo expediente (tocar "Guardar")** — causa exacta desconocida. Se añadió try-catch en `AddPatientModal.handleSave` para exponer el error real en un Alert. Posible culpable: `uuid` v13 usa `crypto.getRandomValues` que puede no estar disponible sin polyfill. Fix probable: `npx expo install react-native-get-random-values` + `import 'react-native-get-random-values'` al inicio de `app/_layout.tsx`. Confirmar con el mensaje del Alert al reproducir el crash.
+
 ### Alta prioridad
 - [x] **Override de columnas como menú desplegable** — modal centrado con checkmark, restaurar y "⊘ Limpiar columna"
 - [x] **Paleta de colores más formal** — grupos SV/Ingresos/Egresos desaturados en `HNSJDDSM.ts`

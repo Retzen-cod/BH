@@ -94,7 +94,7 @@ export default function PatientTable({
   const [showEdit, setShowEdit]         = useState(false);
   const [selRect,     setSelRect]       = useState<DragSelection | null>(null);
   const [interaction, setInteraction]   = useState<CellInteraction | null>(null);
-  const [swapMenuSlot, setSwapMenuSlot] = useState<ColDef | null>(null);
+  const [swapMenuGroup, setSwapMenuGroup] = useState<string | null>(null);
 
   // ── Selección de celdas ───────────────────────────────────────────────────
   const dragSelRef      = useRef<DragSelection | null>(null);
@@ -301,7 +301,7 @@ export default function PatientTable({
   // ── Intercambio de columna vía hold-tap ──────────────────────────────────
 
   function showSwapMenu(slot: ColDef) {
-    setSwapMenuSlot(slot);
+    setSwapMenuGroup(slot.group);
   }
 
   // ── Activar / desactivar bloque ──────────────────────────────────────────
@@ -728,58 +728,72 @@ export default function PatientTable({
         </View>
       )}
 
-      {/* Modal de intercambio de columna */}
-      <Modal visible={!!swapMenuSlot} transparent animationType="fade" onRequestClose={() => setSwapMenuSlot(null)}>
-        <TouchableOpacity style={swapStyles.overlay} activeOpacity={1} onPress={() => setSwapMenuSlot(null)}>
-          <View style={swapStyles.sheet}>
-            {swapMenuSlot && (() => {
-              const currentKey = overrides[swapMenuSlot.key];
-              const activeLabel = resolveActive(swapMenuSlot, overrides).label;
+      {/* Modal de intercambio de columnas por grupo */}
+      <Modal visible={!!swapMenuGroup} transparent animationType="fade" onRequestClose={() => setSwapMenuGroup(null)}>
+        <TouchableOpacity style={swapStyles.overlay} activeOpacity={1} onPress={() => setSwapMenuGroup(null)}>
+          <ScrollView
+            style={swapStyles.sheet}
+            contentContainerStyle={{ paddingBottom: 8 }}
+            keyboardShouldPersistTaps="handled"
+          >
+            {swapMenuGroup && (() => {
+              const groupDef = groupMap[swapMenuGroup];
+              const swappableSlots = slots.filter(s => s.group === swapMenuGroup && (s.alternates?.length ?? 0) > 0);
               return (
                 <>
-                  <Text style={swapStyles.title}>{activeLabel}</Text>
-                  <Text style={swapStyles.subtitle}>Seleccionar columna</Text>
-                  {(swapMenuSlot.alternates ?? []).map(alt => {
-                    const isCurrent = currentKey === alt.key;
+                  <Text style={swapStyles.title}>{groupDef?.label ?? swapMenuGroup}</Text>
+                  <Text style={swapStyles.subtitle}>Seleccionar columnas activas</Text>
+                  {swappableSlots.map(slot => {
+                    const activeKey = overrides[slot.key];
+                    const activeCol = resolveActive(slot, overrides);
                     return (
-                      <TouchableOpacity
-                        key={alt.key}
-                        style={[swapStyles.option, isCurrent && swapStyles.optionSelected]}
-                        onPress={() => { onColOverride(swapMenuSlot.key, alt.key); setSwapMenuSlot(null); }}
-                      >
-                        <Text style={[swapStyles.optionText, isCurrent && swapStyles.optionTextSelected]}>
-                          {alt.label}{isCurrent ? '  ✓' : ''}
-                        </Text>
-                      </TouchableOpacity>
+                      <View key={slot.key} style={swapStyles.slotSection}>
+                        <Text style={swapStyles.slotLabel}>{slot.label}</Text>
+                        {/* Opción: columna por defecto */}
+                        <TouchableOpacity
+                          style={[swapStyles.option, !activeKey && swapStyles.optionSelected]}
+                          onPress={() => onColOverride(slot.key, null)}
+                        >
+                          <Text style={[swapStyles.optionText, !activeKey && swapStyles.optionTextSelected]}>
+                            {slot.label}{!activeKey ? '  ✓' : ''}
+                          </Text>
+                        </TouchableOpacity>
+                        {/* Alternativas */}
+                        {(slot.alternates ?? []).map(alt => {
+                          const isCurrent = activeKey === alt.key;
+                          return (
+                            <TouchableOpacity
+                              key={alt.key}
+                              style={[swapStyles.option, isCurrent && swapStyles.optionSelected]}
+                              onPress={() => onColOverride(slot.key, alt.key)}
+                            >
+                              <Text style={[swapStyles.optionText, isCurrent && swapStyles.optionTextSelected]}>
+                                {alt.label}{isCurrent ? '  ✓' : ''}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                        {/* Limpiar columna activa */}
+                        <TouchableOpacity
+                          style={swapStyles.optionDelete}
+                          onPress={() => {
+                            onBatchUpdateCells(
+                              rows.map((_, i) => ({ rowIndex: i, colKey: activeCol.key, raw: '' }))
+                            );
+                          }}
+                        >
+                          <Text style={swapStyles.optionDeleteText}>⊘ Limpiar "{activeCol.label}"</Text>
+                        </TouchableOpacity>
+                      </View>
                     );
                   })}
-                  {currentKey && (
-                    <TouchableOpacity
-                      style={swapStyles.optionRestore}
-                      onPress={() => { onColOverride(swapMenuSlot.key, null); setSwapMenuSlot(null); }}
-                    >
-                      <Text style={swapStyles.optionRestoreText}>↩ Restaurar "{swapMenuSlot.label}"</Text>
-                    </TouchableOpacity>
-                  )}
-                  <TouchableOpacity
-                    style={swapStyles.optionDelete}
-                    onPress={() => {
-                      const activeKey = resolveActive(swapMenuSlot, overrides).key;
-                      onBatchUpdateCells(
-                        rows.map((_, i) => ({ rowIndex: i, colKey: activeKey, raw: '' }))
-                      );
-                      setSwapMenuSlot(null);
-                    }}
-                  >
-                    <Text style={swapStyles.optionDeleteText}>⊘ Limpiar columna</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={swapStyles.btnCancel} onPress={() => setSwapMenuSlot(null)}>
-                    <Text style={swapStyles.btnCancelText}>Cancelar</Text>
+                  <TouchableOpacity style={swapStyles.btnCancel} onPress={() => setSwapMenuGroup(null)}>
+                    <Text style={swapStyles.btnCancelText}>Cerrar</Text>
                   </TouchableOpacity>
                 </>
               );
             })()}
-          </View>
+          </ScrollView>
         </TouchableOpacity>
       </Modal>
 
@@ -1066,7 +1080,9 @@ const styles = StyleSheet.create({
 
 const swapStyles = StyleSheet.create({
   overlay:             { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', alignItems: 'center' },
-  sheet:               { backgroundColor: '#fff', borderRadius: 14, padding: 16, width: 240, gap: 6 },
+  sheet:               { backgroundColor: '#fff', borderRadius: 14, padding: 16, width: 260, maxHeight: '80%' },
+  slotSection:         { gap: 4, marginBottom: 10, borderTopWidth: 1, borderTopColor: '#E5E7EB', paddingTop: 8 },
+  slotLabel:           { fontSize: 12, fontWeight: '700', color: '#6B7280', marginBottom: 2 },
   title:               { fontSize: 15, fontWeight: '700', color: '#111827', textAlign: 'center' },
   subtitle:            { fontSize: 11, color: '#6B7280', textAlign: 'center', marginBottom: 2 },
   option:              { paddingVertical: 10, paddingHorizontal: 14, borderRadius: 8, backgroundColor: '#F3F4F6' },

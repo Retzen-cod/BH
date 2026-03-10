@@ -39,10 +39,8 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "foregroundImage": "./assets/foreground.png",
+        "backgroundImage": "./assets/background.png"
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.JonathanGuevara.BH",

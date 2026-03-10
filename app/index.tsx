@@ -26,6 +26,25 @@ import { sharePatients } from '../src/utils/share';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+type ListItem =
+  | { type: 'header'; label: string; dateKey: string }
+  | { type: 'patient'; patient: Patient };
+
+const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+
+function dateKey(iso: string): string {
+  return iso ? iso.slice(0, 10) : 'sin-fecha';
+}
+
+function dateLabel(key: string): string {
+  const today     = new Date().toISOString().slice(0, 10);
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  if (key === today)     return 'Hoy';
+  if (key === yesterday) return 'Ayer';
+  const [y, m, d] = key.split('-');
+  return `${parseInt(d)} de ${MONTHS[parseInt(m) - 1]} de ${y}`;
+}
+
 function bhColor(bh: number): string {
   if (bh > 500) return '#DC2626';
   if (bh < -500) return '#7C3AED';
@@ -177,7 +196,7 @@ function AddPatientModal({
 }: {
   visible: boolean;
   onClose: () => void;
-  onSave: (p: Patient) => void;
+  onSave: (p: Patient) => Promise<void>;
   timeFormat: '12h' | '24h';
   defaultHospitalId: string;
   allHospitals: HospitalConfig[];
@@ -212,7 +231,7 @@ function AddPatientModal({
     setShowHPicker(false); setHQuery('');
   }
 
-  function handleSave() {
+  async function handleSave() {
     // ── Validaciones fijas ──
     if (!cama.trim()) {
       Alert.alert('Campo requerido', 'El N° de cama es obligatorio.'); return;
@@ -234,27 +253,32 @@ function AddPatientModal({
       Alert.alert('Campo requerido', 'La talla es obligatoria para este hospital.'); return;
     }
 
-    const p  = Number(peso);
-    const t  = Number(talla);
-    const sc = calcSC(p);
-    const patient: Patient = {
-      id: uuidv4(),
-      cama: cama.trim(),
-      nombre: nombre.trim() || undefined,
-      edad: edad ? Number(edad) : undefined,
-      registro: registro.trim() || undefined,
-      peso: p,
-      talla: talla ? t : undefined,
-      sc,
-      startHora,
-      endHora: startHora,
-      hospitalId: selHospital?.id ?? defaultHospitalId,
-      createdAt: new Date().toISOString(),
-      rows: buildEmptyRows(startHora, startHora),
-    };
-    onSave(patient);
-    reset();
-    onClose();
+    try {
+      const p  = Number(peso);
+      const t  = Number(talla);
+      const sc = calcSC(p);
+      const patient: Patient = {
+        id: uuidv4(),
+        cama: cama.trim(),
+        nombre: nombre.trim() || undefined,
+        edad: edad ? Number(edad) : undefined,
+        registro: registro.trim() || undefined,
+        peso: p,
+        talla: talla ? t : undefined,
+        sc,
+        startHora,
+        endHora: startHora,
+        hospitalId: selHospital?.id ?? defaultHospitalId,
+        createdAt: new Date().toISOString(),
+        rows: buildEmptyRows(startHora, startHora),
+      };
+      await onSave(patient);
+      reset();
+      onClose();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      Alert.alert('Error al guardar', msg);
+    }
   }
 
   return (
@@ -785,6 +809,7 @@ export default function PatientList() {
   async function handleSave(p: Patient) {
     await savePatient(p);
     setPatients(await getPatients());
+    // throws on error — caught by AddPatientModal's try-catch
   }
 
   async function handleEdit(p: Patient) {
@@ -873,6 +898,22 @@ export default function PatientList() {
       )
     : patients;
 
+  // Agrupar por fecha de sesión (createdAt), más reciente primero
+  const grouped = new Map<string, Patient[]>();
+  for (const p of filteredPatients) {
+    const key = dateKey(p.createdAt ?? '');
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key)!.push(p);
+  }
+  const sortedKeys = [...grouped.keys()].sort((a, b) => b.localeCompare(a));
+  const listData: ListItem[] = [];
+  for (const key of sortedKeys) {
+    listData.push({ type: 'header', label: dateLabel(key), dateKey: key });
+    for (const p of grouped.get(key)!) {
+      listData.push({ type: 'patient', patient: p });
+    }
+  }
+
   return (
     <View style={styles.screen}>
       <StatusBar style={isDark ? 'light' : 'dark'} backgroundColor={statusBg} translucent={false} />
@@ -909,8 +950,8 @@ export default function PatientList() {
       </View>
 
       <FlatList
-        data={filteredPatients}
-        keyExtractor={(p) => p.id}
+        data={listData}
+        keyExtractor={(item) => item.type === 'header' ? `hdr-${item.dateKey}` : item.patient.id}
         style={{ flex: 1 }}
         contentContainerStyle={styles.list}
         ListEmptyComponent={
@@ -925,24 +966,34 @@ export default function PatientList() {
             )}
           </View>
         }
-        renderItem={({ item }) => (
-          <PatientCard
-            patient={item}
-            hospital={allHospitals.find(h => h.id === item.hospitalId)}
-            onPress={() =>
-              multiSelectMode ? toggleSelect(item.id) : router.push(`/patient/${item.id}`)
-            }
-            onLongPress={() =>
-              multiSelectMode ? toggleSelect(item.id) : enterMultiSelect(item.id)
-            }
-            onDelete={() => handleDelete(item.id)}
-            onShare={() => sharePatients([item], allHospitals)}
-            onEdit={() => setEditingPatient(item)}
-            timeFormat={settings.timeFormat}
-            selected={selectedIds.includes(item.id)}
-            multiSelectMode={multiSelectMode}
-          />
-        )}
+        renderItem={({ item }: { item: ListItem }) => {
+          if (item.type === 'header') {
+            return (
+              <View style={styles.dateHeader}>
+                <Text style={styles.dateHeaderText}>{item.label}</Text>
+              </View>
+            );
+          }
+          const p = item.patient;
+          return (
+            <PatientCard
+              patient={p}
+              hospital={allHospitals.find(h => h.id === p.hospitalId)}
+              onPress={() =>
+                multiSelectMode ? toggleSelect(p.id) : router.push(`/patient/${p.id}`)
+              }
+              onLongPress={() =>
+                multiSelectMode ? toggleSelect(p.id) : enterMultiSelect(p.id)
+              }
+              onDelete={() => handleDelete(p.id)}
+              onShare={() => sharePatients([p], allHospitals)}
+              onEdit={() => setEditingPatient(p)}
+              timeFormat={settings.timeFormat}
+              selected={selectedIds.includes(p.id)}
+              multiSelectMode={multiSelectMode}
+            />
+          );
+        }}
       />
 
       {/* Barra de selección múltiple */}
@@ -1077,7 +1128,9 @@ const styles = StyleSheet.create({
 
   empty:        { flex: 1, alignItems: 'center', marginTop: 80 },
   emptyText:    { fontSize: 17, fontWeight: '600', color: '#6B7280' },
-  emptySubtext: { fontSize: 14, color: '#9CA3AF', marginTop: 6 },
+  emptySubtext:    { fontSize: 14, color: '#9CA3AF', marginTop: 6 },
+  dateHeader:      { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 4 },
+  dateHeaderText:  { fontSize: 12, fontWeight: '700', color: '#6B7280', textTransform: 'uppercase', letterSpacing: 0.8 },
 
   fab: {
     position: 'absolute', right: 20, bottom: 28, width: 56, height: 56,
