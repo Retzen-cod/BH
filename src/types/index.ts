@@ -36,6 +36,7 @@ export interface TableRow {
   orina?: number;
   evacuaciones?: number;
   aspiraciones?: number;
+  drenos?: number;
   otrosEgresos?: number;
 }
 
@@ -68,4 +69,5 @@ export interface Patient {
   rows: TableRow[];
   disabledBlocks?: number[];          // índices de bloques excluidos de BH-Total y DH-Total
   colOverrides?:   Record<string, string>; // { [slotKey]: activeColKey } — columnas intercambiadas
+  colLabels?:      Record<string, string>; // { [slotKey]: customLabel }  — etiquetas personalizadas
 }

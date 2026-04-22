@@ -121,9 +121,32 @@ export default function PatientScreen() {
     persist(updated);
   }
 
-  function handleEditInfo(updated: Patient) {
+  function handleColLabelChange(slotKey: string, label: string | null) {
+    if (!patient) return;
+    const labels = { ...(patient.colLabels ?? {}) };
+    if (label === null) {
+      delete labels[slotKey];
+    } else {
+      labels[slotKey] = label;
+    }
+    const updated = { ...patient, colLabels: labels };
     setPatient(updated);
     persist(updated);
+  }
+
+  function handleEditInfo(updated: Patient) {
+    let final = updated;
+    if (patient && updated.startHora !== patient.startHora) {
+      const startH = parseInt(updated.startHora.split(':')[0], 10);
+      const newRows = updated.rows.map((row, i) => ({
+        ...row,
+        hora: `${String((startH + i) % 24).padStart(2, '0')}:00`,
+      }));
+      final = { ...updated, rows: newRows };
+      rowsHistory.reset(newRows);
+    }
+    setPatient(final);
+    persist(final);
   }
 
   async function handleExport() {
@@ -148,6 +171,7 @@ export default function PatientScreen() {
       canRedo={rowsHistory.canRedo}
       onToggleBlock={handleToggleBlock}
       onColOverride={handleColOverride}
+      onColLabelChange={handleColLabelChange}
       onEditInfo={handleEditInfo}
       onExport={handleExport}
       onBack={() => router.back()}

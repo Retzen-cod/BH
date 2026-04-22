@@ -40,6 +40,7 @@ interface Props {
   canRedo:              boolean;
   onToggleBlock:        (blockIndex: number) => void;
   onColOverride:        (slotKey: string, activeKey: string | null) => void;
+  onColLabelChange:     (slotKey: string, label: string | null) => void;
   onEditInfo:           (updated: Patient) => void;
   onExport:             () => void;
   onBack:               () => void;
@@ -86,7 +87,7 @@ function resolveActive(slot: ColDef, overrides: Record<string, string>): ColDef 
 export default function PatientTable({
   patient, hospital, settings,
   onUpdateCell, onBatchUpdateCells, onUndo, onRedo, canUndo, canRedo,
-  onToggleBlock, onColOverride, onEditInfo,
+  onToggleBlock, onColOverride, onColLabelChange, onEditInfo,
   onExport, onBack,
 }: Props) {
   const headerScrollRef = useRef<ScrollView>(null);
@@ -95,6 +96,7 @@ export default function PatientTable({
   const [selRect,     setSelRect]       = useState<DragSelection | null>(null);
   const [interaction, setInteraction]   = useState<CellInteraction | null>(null);
   const [swapMenuGroup, setSwapMenuGroup] = useState<string | null>(null);
+  const [labelDrafts, setLabelDrafts] = useState<Record<string, string>>({});
 
   // ── Selección de celdas ───────────────────────────────────────────────────
   const dragSelRef      = useRef<DragSelection | null>(null);
@@ -143,6 +145,16 @@ export default function PatientTable({
       }
     };
   });
+
+  useEffect(() => {
+    if (swapMenuGroup) {
+      const init: Record<string, string> = {};
+      slots
+        .filter(s => s.group === swapMenuGroup && !s.isTotal && !s.isTA && !s.readOnly)
+        .forEach(s => { init[s.key] = (patient.colLabels ?? {})[s.key] ?? ''; });
+      setLabelDrafts(init);
+    }
+  }, [swapMenuGroup]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const combinedGesture = useMemo(() => {
     const defs = TableGestureRegistry.getAll();
@@ -240,11 +252,15 @@ export default function PatientTable({
   const tf      = settings.timeFormat;
 
   const overrides  = patient.colOverrides ?? {};
+  const colLabels  = patient.colLabels ?? {};
   const disabled   = patient.disabledBlocks ?? [];
   const slots      = hospital.dataCols;
   const activeCols = slots.map(slot => resolveActive(slot, overrides));
   const groupMap   = Object.fromEntries(hospital.groups.map(g => [g.key, g]));
   const DATA_W     = slots.reduce((a, s) => a + s.width, 0);
+  function displayLabel(slot: ColDef): string {
+    return colLabels[slot.key] ?? resolveActive(slot, overrides).label;
+  }
 
   const allBlocks     = calcBlocks(rows, peso, sc);
   const enabledBlocks = allBlocks.filter(b => !disabled.includes(b.blockIndex));
@@ -252,7 +268,7 @@ export default function PatientTable({
   const dhTotal       = calcDHTotal(enabledBlocks);
 
   // PI de referencia para un bloque estándar de 4h
-  const piRef4h = Math.round((sc * 400 / 24) * 4);
+  const piRef4h = ((sc * 400 / 24) * 4).toFixed(2);
 
 
   function onDataScroll(e: NativeSyntheticEvent<NativeScrollEvent>) {
@@ -354,18 +370,19 @@ export default function PatientTable({
       <View style={[styles.row, { height: HEADER_H }]}>
         {slots.map((slot) => {
           const active  = resolveActive(slot, overrides);
-          const hasAlts = (slot.alternates?.length ?? 0) > 0;
-          const bg      = groupMap[slot.group]?.bg ?? '#E5E7EB';
+          const isInterchangeable = !slot.isTotal && !slot.isTA && !slot.readOnly
+            && (slot.group === 'ing' || slot.group === 'egr');
+          const bg = groupMap[slot.group]?.bg ?? '#E5E7EB';
           return (
             <TouchableOpacity
               key={slot.key}
-              onLongPress={hasAlts ? () => showSwapMenu(slot) : undefined}
+              onLongPress={isInterchangeable ? () => showSwapMenu(slot) : undefined}
               delayLongPress={400}
-              activeOpacity={hasAlts ? 0.6 : 1}
+              activeOpacity={isInterchangeable ? 0.6 : 1}
               style={[styles.colHeader, { width: slot.width, backgroundColor: bg }]}
             >
               <Text style={styles.colHeaderText} numberOfLines={2}>
-                {active.label}{hasAlts ? ' ⇌' : ''}
+                {displayLabel(slot)}{isInterchangeable ? ' ⇌' : ''}
               </Text>
             </TouchableOpacity>
           );
@@ -518,6 +535,23 @@ export default function PatientTable({
           if (slot.isTA || active.readOnly) {
             return <View key={slot.key} style={[styles.cell, { width: slot.width }]} />;
           }
+
+          if (active.group === 'sv') {
+            const vals = rows
+              .map(row => (row as any)[active.key])
+              .filter((v): v is number => typeof v === 'number');
+            const avg = vals.length > 0
+              ? vals.reduce((a, b) => a + b, 0) / vals.length
+              : null;
+            return (
+              <View key={slot.key} style={[styles.cell, { width: slot.width }]}>
+                {avg !== null
+                  ? <Text style={styles.totalVal}>{parseFloat(avg.toFixed(2)).toString()}</Text>
+                  : null}
+              </View>
+            );
+          }
+
           const colSum = rows.reduce((acc, row) => {
             if (slot.isTotal) return acc + groupRowTotal(row, slot.group, activeCols);
             return acc + ((row as any)[active.key] ?? 0);
@@ -738,41 +772,64 @@ export default function PatientTable({
           >
             {swapMenuGroup && (() => {
               const groupDef = groupMap[swapMenuGroup];
-              const swappableSlots = slots.filter(s => s.group === swapMenuGroup && (s.alternates?.length ?? 0) > 0);
+              const swappableSlots = slots.filter(s => s.group === swapMenuGroup && !s.isTotal && !s.isTA && !s.readOnly);
               return (
                 <>
                   <Text style={swapStyles.title}>{groupDef?.label ?? swapMenuGroup}</Text>
-                  <Text style={swapStyles.subtitle}>Seleccionar columnas activas</Text>
+                  <Text style={swapStyles.subtitle}>Columna activa · Etiqueta personalizada</Text>
                   {swappableSlots.map(slot => {
                     const activeKey = overrides[slot.key];
                     const activeCol = resolveActive(slot, overrides);
                     return (
                       <View key={slot.key} style={swapStyles.slotSection}>
                         <Text style={swapStyles.slotLabel}>{slot.label}</Text>
-                        {/* Opción: columna por defecto */}
-                        <TouchableOpacity
-                          style={[swapStyles.option, !activeKey && swapStyles.optionSelected]}
-                          onPress={() => onColOverride(slot.key, null)}
-                        >
-                          <Text style={[swapStyles.optionText, !activeKey && swapStyles.optionTextSelected]}>
-                            {slot.label}{!activeKey ? '  ✓' : ''}
-                          </Text>
-                        </TouchableOpacity>
-                        {/* Alternativas */}
-                        {(slot.alternates ?? []).map(alt => {
-                          const isCurrent = activeKey === alt.key;
-                          return (
+                        {/* Alternativas (solo si tiene) */}
+                        {(slot.alternates?.length ?? 0) > 0 && (
+                          <>
                             <TouchableOpacity
-                              key={alt.key}
-                              style={[swapStyles.option, isCurrent && swapStyles.optionSelected]}
-                              onPress={() => onColOverride(slot.key, alt.key)}
+                              style={[swapStyles.option, !activeKey && swapStyles.optionSelected]}
+                              onPress={() => onColOverride(slot.key, null)}
                             >
-                              <Text style={[swapStyles.optionText, isCurrent && swapStyles.optionTextSelected]}>
-                                {alt.label}{isCurrent ? '  ✓' : ''}
+                              <Text style={[swapStyles.optionText, !activeKey && swapStyles.optionTextSelected]}>
+                                {slot.label}{!activeKey ? '  ✓' : ''}
                               </Text>
                             </TouchableOpacity>
-                          );
-                        })}
+                            {(slot.alternates ?? []).map(alt => {
+                              const isCurrent = activeKey === alt.key;
+                              return (
+                                <TouchableOpacity
+                                  key={alt.key}
+                                  style={[swapStyles.option, isCurrent && swapStyles.optionSelected]}
+                                  onPress={() => onColOverride(slot.key, alt.key)}
+                                >
+                                  <Text style={[swapStyles.optionText, isCurrent && swapStyles.optionTextSelected]}>
+                                    {alt.label}{isCurrent ? '  ✓' : ''}
+                                  </Text>
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </>
+                        )}
+                        {/* Etiqueta personalizada */}
+                        <View style={swapStyles.labelRow}>
+                          <TextInput
+                            style={swapStyles.labelInput}
+                            placeholder={activeCol.label}
+                            placeholderTextColor="#9CA3AF"
+                            value={labelDrafts[slot.key] ?? ''}
+                            onChangeText={v => setLabelDrafts(prev => ({ ...prev, [slot.key]: v }))}
+                            maxLength={20}
+                          />
+                          <TouchableOpacity
+                            style={swapStyles.labelBtn}
+                            onPress={() => {
+                              const v = (labelDrafts[slot.key] ?? '').trim() || null;
+                              onColLabelChange(slot.key, v);
+                            }}
+                          >
+                            <Text style={swapStyles.labelBtnText}>✓</Text>
+                          </TouchableOpacity>
+                        </View>
                         {/* Limpiar columna activa */}
                         <TouchableOpacity
                           style={swapStyles.optionDelete}
@@ -1095,4 +1152,8 @@ const swapStyles = StyleSheet.create({
   optionDeleteText:    { fontSize: 13, color: '#B91C1C', fontWeight: '600', textAlign: 'center' },
   btnCancel:           { paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: '#E5E7EB', marginTop: 2 },
   btnCancelText:       { color: '#6B7280', fontWeight: '600', textAlign: 'center' },
+  labelRow:            { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
+  labelInput:          { flex: 1, borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4, fontSize: 12, color: '#111827', backgroundColor: '#F9FAFB' },
+  labelBtn:            { backgroundColor: '#2563EB', borderRadius: 6, paddingHorizontal: 10, paddingVertical: 6 },
+  labelBtnText:        { color: '#fff', fontSize: 13, fontWeight: '700' as const },
 });

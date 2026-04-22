@@ -46,5 +46,8 @@ yarn-error.*
 # logs
 *.log
 
-# Obsidian vault (notas locales, no código)
-BH-App/
+#Obsidian
+.obsidian
+
+#Claude
+.claude

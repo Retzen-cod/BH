@@ -32,13 +32,21 @@ type ListItem =
 
 const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 
+function localDateKey(d: Date): string {
+  const y  = d.getFullYear();
+  const m  = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
+}
+
 function dateKey(iso: string): string {
-  return iso ? iso.slice(0, 10) : 'sin-fecha';
+  return iso ? localDateKey(new Date(iso)) : 'sin-fecha';
 }
 
 function dateLabel(key: string): string {
-  const today     = new Date().toISOString().slice(0, 10);
-  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const now       = new Date();
+  const today     = localDateKey(now);
+  const yesterday = localDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
   if (key === today)     return 'Hoy';
   if (key === yesterday) return 'Ayer';
   const [y, m, d] = key.split('-');

@@ -71,6 +71,7 @@ export const HNSJDDSM: HospitalConfig = {
         { key: 'aspiraciones', label: 'Aspir.', width: 58, group: 'egr' },
       ],
     },
+    { key: 'drenos',       label: 'Drenos',   width: 54, group: 'egr' },
     { key: 'otrosEgresos', label: 'Otros',    width: 54, group: 'egr' },
     { key: 'total_egr',    label: 'Total',    width: 58, group: 'egr', isTotal: true, readOnly: true },
   ],

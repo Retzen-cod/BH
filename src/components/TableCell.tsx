@@ -26,7 +26,12 @@ export default function TableCell({
   onTripleTap,
 }: Props) {
   const [open, setOpen] = useState(false);
-  const display = value !== undefined && value !== '' ? String(value) : '';
+  const display =
+    value !== undefined && value !== ''
+      ? typeof value === 'number'
+        ? parseFloat(value.toFixed(2)).toString()
+        : String(value)
+      : '';
 
   // ── Triple toque: detección manual para no retrasar el toque simple ────────
   const tapCount = useRef(0);
