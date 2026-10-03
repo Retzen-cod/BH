@@ -932,7 +932,7 @@ export default function PatientList() {
 
   return (
     <View style={styles.screen}>
-      <StatusBar style={isDark ? 'light' : 'dark'} backgroundColor={statusBg} translucent={false} />
+      <StatusBar style={isDark ? 'light' : 'dark'} />
       <View style={{ height: insets.top, backgroundColor: statusBg }} />
 
       {/* Barra superior */}

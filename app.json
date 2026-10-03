@@ -7,11 +7,6 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.JonathanGuevara.BH",
@@ -21,41 +16,67 @@
           {
             "CFBundleTypeRole": "Editor",
             "CFBundleTypeName": "Balance Hídrico",
-            "LSItemContentTypes": ["com.JonathanGuevara.BH.bhd"]
+            "LSItemContentTypes": [
+              "com.JonathanGuevara.BH.bhd"
+            ]
           }
         ],
         "UTImportedTypeDeclarations": [
           {
             "UTTypeIdentifier": "com.JonathanGuevara.BH.bhd",
             "UTTypeDescription": "Balance Hídrico Data",
-            "UTTypeConformsTo": ["public.data"],
+            "UTTypeConformsTo": [
+              "public.data"
+            ],
             "UTTypeTagSpecification": {
-              "public.filename-extension": ["bhd"],
+              "public.filename-extension": [
+                "bhd"
+              ],
               "public.mime-type": "application/x-bhd"
             }
           }
         ]
       }
     },
-      "android": {
-        "versionCode": 6,
-        "adaptiveIcon": {
-          "foregroundImage": "./assets/foreground.png",
-          "backgroundImage": "./assets/background.png"
-        },
+    "android": {
+      "versionCode": 6,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/foreground.png",
+        "backgroundImage": "./assets/background.png"
+      },
       "predictiveBackGestureEnabled": false,
       "package": "com.JonathanGuevara.BH",
       "intentFilters": [
         {
           "action": "VIEW",
-          "category": ["DEFAULT"],
+          "category": [
+            "DEFAULT"
+          ],
           "data": [
-            { "scheme": "content", "mimeType": "application/zip" },
-            { "scheme": "content", "mimeType": "application/x-zip-compressed" },
-            { "scheme": "content", "mimeType": "application/octet-stream" },
-            { "scheme": "file", "mimeType": "application/zip" },
-            { "scheme": "file", "mimeType": "application/x-zip-compressed" },
-            { "scheme": "file", "mimeType": "application/octet-stream" }
+            {
+              "scheme": "content",
+              "mimeType": "application/zip"
+            },
+            {
+              "scheme": "content",
+              "mimeType": "application/x-zip-compressed"
+            },
+            {
+              "scheme": "content",
+              "mimeType": "application/octet-stream"
+            },
+            {
+              "scheme": "file",
+              "mimeType": "application/zip"
+            },
+            {
+              "scheme": "file",
+              "mimeType": "application/x-zip-compressed"
+            },
+            {
+              "scheme": "file",
+              "mimeType": "application/octet-stream"
+            }
           ]
         }
       ]
@@ -69,10 +90,21 @@
       [
         "expo-share-intent",
         {
-          "androidIntentFilters": ["application/x-bhd", "application/octet-stream"],
+          "androidIntentFilters": [
+            "application/x-bhd",
+            "application/octet-stream"
+          ],
           "iosActivationRules": {
             "NSExtensionActivationSupportsFileWithMaxCount": 1
           }
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#ffffff"
         }
       ]
     ],
