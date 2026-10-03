@@ -95,7 +95,7 @@ export default function PatientTable({
   const [showEdit, setShowEdit]         = useState(false);
   const [selRect,     setSelRect]       = useState<DragSelection | null>(null);
   const [interaction, setInteraction]   = useState<CellInteraction | null>(null);
-  const [swapMenuGroup, setSwapMenuGroup] = useState<string | null>(null);
+  const [swapMenuSlotKey, setSwapMenuSlotKey] = useState<string | null>(null);
   const [labelDrafts, setLabelDrafts] = useState<Record<string, string>>({});
 
   // ── Selección de celdas ───────────────────────────────────────────────────
@@ -147,14 +147,13 @@ export default function PatientTable({
   });
 
   useEffect(() => {
-    if (swapMenuGroup) {
-      const init: Record<string, string> = {};
-      slots
-        .filter(s => s.group === swapMenuGroup && !s.isTotal && !s.isTA && !s.readOnly)
-        .forEach(s => { init[s.key] = (patient.colLabels ?? {})[s.key] ?? ''; });
-      setLabelDrafts(init);
+    if (swapMenuSlotKey) {
+      setLabelDrafts(prev => ({
+        ...prev,
+        [swapMenuSlotKey]: (patient.colLabels ?? {})[swapMenuSlotKey] ?? '',
+      }));
     }
-  }, [swapMenuGroup]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [swapMenuSlotKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const combinedGesture = useMemo(() => {
     const defs = TableGestureRegistry.getAll();
@@ -317,7 +316,7 @@ export default function PatientTable({
   // ── Intercambio de columna vía hold-tap ──────────────────────────────────
 
   function showSwapMenu(slot: ColDef) {
-    setSwapMenuGroup(slot.group);
+    setSwapMenuSlotKey(slot.key);
   }
 
   // ── Activar / desactivar bloque ──────────────────────────────────────────
@@ -456,10 +455,10 @@ export default function PatientTable({
           const pos     = b.bh >= 0;
 
           const metrics = [
-            { label: 'BH', val: (pos ? '+' : '') + b.bh.toFixed(1), color: pos ? '#DC2626' : '#059669' },
+            { label: 'BH', val: (pos ? '+' : '') + b.bh.toFixed(2), color: pos ? '#DC2626' : '#059669' },
             { label: 'DH', val: b.dh.toFixed(2),                    color: '#1D4ED8' },
-            { label: 'E',  val: b.e.toFixed(1),                     color: '#065F46' },
-            { label: 'S',  val: b.s.toFixed(1),                     color: '#92400E' },
+            { label: 'E',  val: b.e.toFixed(2),                     color: '#065F46' },
+            { label: 'S',  val: b.s.toFixed(2),                     color: '#92400E' },
           ];
 
           return (
@@ -762,89 +761,95 @@ export default function PatientTable({
         </View>
       )}
 
-      {/* Modal de intercambio de columnas por grupo */}
-      <Modal visible={!!swapMenuGroup} transparent animationType="fade" onRequestClose={() => setSwapMenuGroup(null)}>
-        <TouchableOpacity style={swapStyles.overlay} activeOpacity={1} onPress={() => setSwapMenuGroup(null)}>
+      {/* Modal de intercambio / etiqueta de una sola columna */}
+      <Modal visible={!!swapMenuSlotKey} transparent animationType="fade" onRequestClose={() => setSwapMenuSlotKey(null)}>
+        <TouchableOpacity style={swapStyles.overlay} activeOpacity={1} onPress={() => setSwapMenuSlotKey(null)}>
           <ScrollView
             style={swapStyles.sheet}
             contentContainerStyle={{ paddingBottom: 8 }}
             keyboardShouldPersistTaps="handled"
           >
-            {swapMenuGroup && (() => {
-              const groupDef = groupMap[swapMenuGroup];
-              const swappableSlots = slots.filter(s => s.group === swapMenuGroup && !s.isTotal && !s.isTA && !s.readOnly);
+            {swapMenuSlotKey && (() => {
+              const slot = slots.find(s => s.key === swapMenuSlotKey);
+              if (!slot) return null;
+              const groupDef    = groupMap[slot.group];
+              const activeKey   = overrides[slot.key];
+              const activeCol   = resolveActive(slot, overrides);
+              const hasCustomLabel = !!colLabels[slot.key];
               return (
                 <>
-                  <Text style={swapStyles.title}>{groupDef?.label ?? swapMenuGroup}</Text>
-                  <Text style={swapStyles.subtitle}>Columna activa · Etiqueta personalizada</Text>
-                  {swappableSlots.map(slot => {
-                    const activeKey = overrides[slot.key];
-                    const activeCol = resolveActive(slot, overrides);
-                    return (
-                      <View key={slot.key} style={swapStyles.slotSection}>
-                        <Text style={swapStyles.slotLabel}>{slot.label}</Text>
-                        {/* Alternativas (solo si tiene) */}
-                        {(slot.alternates?.length ?? 0) > 0 && (
-                          <>
-                            <TouchableOpacity
-                              style={[swapStyles.option, !activeKey && swapStyles.optionSelected]}
-                              onPress={() => onColOverride(slot.key, null)}
-                            >
-                              <Text style={[swapStyles.optionText, !activeKey && swapStyles.optionTextSelected]}>
-                                {slot.label}{!activeKey ? '  ✓' : ''}
-                              </Text>
-                            </TouchableOpacity>
-                            {(slot.alternates ?? []).map(alt => {
-                              const isCurrent = activeKey === alt.key;
-                              return (
-                                <TouchableOpacity
-                                  key={alt.key}
-                                  style={[swapStyles.option, isCurrent && swapStyles.optionSelected]}
-                                  onPress={() => onColOverride(slot.key, alt.key)}
-                                >
-                                  <Text style={[swapStyles.optionText, isCurrent && swapStyles.optionTextSelected]}>
-                                    {alt.label}{isCurrent ? '  ✓' : ''}
-                                  </Text>
-                                </TouchableOpacity>
-                              );
-                            })}
-                          </>
-                        )}
-                        {/* Etiqueta personalizada */}
-                        <View style={swapStyles.labelRow}>
-                          <TextInput
-                            style={swapStyles.labelInput}
-                            placeholder={activeCol.label}
-                            placeholderTextColor="#9CA3AF"
-                            value={labelDrafts[slot.key] ?? ''}
-                            onChangeText={v => setLabelDrafts(prev => ({ ...prev, [slot.key]: v }))}
-                            maxLength={20}
-                          />
+                  <Text style={swapStyles.title}>{slot.label}</Text>
+                  <Text style={swapStyles.subtitle}>{groupDef?.label ?? slot.group} · Columna activa · Etiqueta</Text>
+                  {/* Alternativas (solo si tiene) */}
+                  {(slot.alternates?.length ?? 0) > 0 && (
+                    <>
+                      <TouchableOpacity
+                        style={[swapStyles.option, !activeKey && swapStyles.optionSelected]}
+                        onPress={() => onColOverride(slot.key, null)}
+                      >
+                        <Text style={[swapStyles.optionText, !activeKey && swapStyles.optionTextSelected]}>
+                          {slot.label}{!activeKey ? '  ✓' : ''}
+                        </Text>
+                      </TouchableOpacity>
+                      {(slot.alternates ?? []).map(alt => {
+                        const isCurrent = activeKey === alt.key;
+                        return (
                           <TouchableOpacity
-                            style={swapStyles.labelBtn}
-                            onPress={() => {
-                              const v = (labelDrafts[slot.key] ?? '').trim() || null;
-                              onColLabelChange(slot.key, v);
-                            }}
+                            key={alt.key}
+                            style={[swapStyles.option, isCurrent && swapStyles.optionSelected]}
+                            onPress={() => onColOverride(slot.key, alt.key)}
                           >
-                            <Text style={swapStyles.labelBtnText}>✓</Text>
+                            <Text style={[swapStyles.optionText, isCurrent && swapStyles.optionTextSelected]}>
+                              {alt.label}{isCurrent ? '  ✓' : ''}
+                            </Text>
                           </TouchableOpacity>
-                        </View>
-                        {/* Limpiar columna activa */}
-                        <TouchableOpacity
-                          style={swapStyles.optionDelete}
-                          onPress={() => {
-                            onBatchUpdateCells(
-                              rows.map((_, i) => ({ rowIndex: i, colKey: activeCol.key, raw: '' }))
-                            );
-                          }}
-                        >
-                          <Text style={swapStyles.optionDeleteText}>⊘ Limpiar "{activeCol.label}"</Text>
-                        </TouchableOpacity>
-                      </View>
-                    );
-                  })}
-                  <TouchableOpacity style={swapStyles.btnCancel} onPress={() => setSwapMenuGroup(null)}>
+                        );
+                      })}
+                    </>
+                  )}
+                  {/* Etiqueta personalizada */}
+                  <View style={swapStyles.labelRow}>
+                    <TextInput
+                      style={swapStyles.labelInput}
+                      placeholder={activeCol.label}
+                      placeholderTextColor="#9CA3AF"
+                      value={labelDrafts[slot.key] ?? ''}
+                      onChangeText={v => setLabelDrafts(prev => ({ ...prev, [slot.key]: v }))}
+                      maxLength={20}
+                    />
+                    <TouchableOpacity
+                      style={swapStyles.labelBtn}
+                      onPress={() => {
+                        const v = (labelDrafts[slot.key] ?? '').trim();
+                        if (v) onColLabelChange(slot.key, v);
+                      }}
+                    >
+                      <Text style={swapStyles.labelBtnText}>✓</Text>
+                    </TouchableOpacity>
+                  </View>
+                  {hasCustomLabel && (
+                    <TouchableOpacity
+                      style={swapStyles.optionRestore}
+                      onPress={() => {
+                        onColLabelChange(slot.key, null);
+                        setLabelDrafts(prev => ({ ...prev, [slot.key]: '' }));
+                      }}
+                    >
+                      <Text style={swapStyles.optionRestoreText}>↺ Restaurar etiqueta por defecto</Text>
+                    </TouchableOpacity>
+                  )}
+                  {/* Limpiar columna activa */}
+                  <TouchableOpacity
+                    style={swapStyles.optionDelete}
+                    onPress={() => {
+                      onBatchUpdateCells(
+                        rows.map((_, i) => ({ rowIndex: i, colKey: activeCol.key, raw: '' }))
+                      );
+                    }}
+                  >
+                    <Text style={swapStyles.optionDeleteText}>⊘ Limpiar "{activeCol.label}"</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={swapStyles.btnCancel} onPress={() => setSwapMenuSlotKey(null)}>
                     <Text style={swapStyles.btnCancelText}>Cerrar</Text>
                   </TouchableOpacity>
                 </>
@@ -1138,17 +1143,15 @@ const styles = StyleSheet.create({
 const swapStyles = StyleSheet.create({
   overlay:             { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', alignItems: 'center' },
   sheet:               { backgroundColor: '#fff', borderRadius: 14, padding: 16, width: 260, maxHeight: '80%' },
-  slotSection:         { gap: 4, marginBottom: 10, borderTopWidth: 1, borderTopColor: '#E5E7EB', paddingTop: 8 },
-  slotLabel:           { fontSize: 12, fontWeight: '700', color: '#6B7280', marginBottom: 2 },
   title:               { fontSize: 15, fontWeight: '700', color: '#111827', textAlign: 'center' },
-  subtitle:            { fontSize: 11, color: '#6B7280', textAlign: 'center', marginBottom: 2 },
-  option:              { paddingVertical: 10, paddingHorizontal: 14, borderRadius: 8, backgroundColor: '#F3F4F6' },
+  subtitle:            { fontSize: 11, color: '#6B7280', textAlign: 'center', marginBottom: 8 },
+  option:              { paddingVertical: 10, paddingHorizontal: 14, borderRadius: 8, backgroundColor: '#F3F4F6', marginBottom: 6 },
   optionSelected:      { backgroundColor: '#DBEAFE' },
   optionText:          { fontSize: 13, color: '#374151', fontWeight: '500', textAlign: 'center' },
   optionTextSelected:  { color: '#1D4ED8', fontWeight: '700' },
-  optionRestore:       { paddingVertical: 10, paddingHorizontal: 14, borderRadius: 8, backgroundColor: '#FEF3C7' },
+  optionRestore:       { paddingVertical: 10, paddingHorizontal: 14, borderRadius: 8, backgroundColor: '#FEF3C7', marginTop: 8 },
   optionRestoreText:   { fontSize: 13, color: '#92400E', fontWeight: '600', textAlign: 'center' },
-  optionDelete:        { paddingVertical: 10, paddingHorizontal: 14, borderRadius: 8, backgroundColor: '#FEE2E2' },
+  optionDelete:        { paddingVertical: 10, paddingHorizontal: 14, borderRadius: 8, backgroundColor: '#FEE2E2', marginTop: 8 },
   optionDeleteText:    { fontSize: 13, color: '#B91C1C', fontWeight: '600', textAlign: 'center' },
   btnCancel:           { paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: '#E5E7EB', marginTop: 2 },
   btnCancelText:       { color: '#6B7280', fontWeight: '600', textAlign: 'center' },
