@@ -2,7 +2,7 @@ import React, { useState, useCallback } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
   Alert, Modal, TextInput, KeyboardAvoidingView, Platform, ScrollView,
-  useColorScheme,
+  useColorScheme, ActivityIndicator,
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -657,6 +657,7 @@ export default function PatientList() {
   const [allHospitals, setAllHospitals]       = useState<HospitalConfig[]>([]);
   const [showHospitalPicker, setShowHospitalPicker] = useState(false);
   const [searchQuery, setSearchQuery]         = useState('');
+  const [importStatus, setImportStatus]       = useState<'idle' | 'importing'>('idle');
 
   const loadData = useCallback(async () => {
     const [pts, hosp] = await Promise.all([getPatients(), getAllHospitalsAsync()]);
@@ -742,6 +743,7 @@ export default function PatientList() {
 
   async function importFromUrl(url: string) {
     if (!url || (!url.startsWith('content://') && !url.startsWith('file://'))) return;
+    setImportStatus('importing');
     try {
       // content:// URIs de otros apps no son legibles directamente; copiar al cache primero
       let localUrl = url;
@@ -779,8 +781,14 @@ export default function PatientList() {
 
       if (patients.length > 0) {
         await importBHDData(JSON.stringify({ v: 2, patients, hospitals }));
+      } else {
+        Alert.alert('Error', 'El archivo no contiene expedientes válidos.');
       }
-    } catch { Alert.alert('Error', 'No se pudo importar el archivo.'); }
+    } catch {
+      Alert.alert('Error', 'No se pudo importar el archivo.');
+    } finally {
+      setImportStatus('idle');
+    }
   }
 
   // Al abrir un .bhd desde WhatsApp (ACTION_VIEW)
@@ -1035,7 +1043,11 @@ export default function PatientList() {
         </View>
       ) : (
         <>
-          <TouchableOpacity style={styles.fabImport} onPress={handleImport}>
+          <TouchableOpacity
+            style={[styles.fabImport, importStatus === 'importing' && styles.fabDisabled]}
+            onPress={handleImport}
+            disabled={importStatus === 'importing'}
+          >
             <Text style={styles.fabImportText}>↓ BHD</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.fab} onPress={() => setShowAdd(true)}>
@@ -1043,6 +1055,16 @@ export default function PatientList() {
           </TouchableOpacity>
         </>
       )}
+
+      {/* Overlay de feedback durante la importación de un .bhd */}
+      <Modal visible={importStatus === 'importing'} transparent animationType="fade">
+        <View style={styles.importOverlay}>
+          <View style={styles.importCard}>
+            <ActivityIndicator size="large" color="#2563EB" />
+            <Text style={styles.importText}>Importando expediente…</Text>
+          </View>
+        </View>
+      </Modal>
 
       <EditPatientModal
         visible={editingPatient !== null}
@@ -1153,6 +1175,17 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   fabImportText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  fabDisabled: { opacity: 0.5 },
+
+  importOverlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  importCard: {
+    backgroundColor: '#fff', borderRadius: 14, paddingVertical: 28, paddingHorizontal: 32,
+    alignItems: 'center', gap: 12,
+  },
+  importText: { fontSize: 14, fontWeight: '600', color: '#374151' },
 
   // Buscador
   searchBar: {
