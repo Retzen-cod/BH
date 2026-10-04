@@ -1,9 +1,24 @@
-# hospitals — Registro de hospitales
+# hospitals — Registro de hospitales y tablas
 
 `src/hospitals/index.ts`
-`src/hospitals/HNSJDDSM.ts`
+`src/hospitals/HNSJDDSM/index.ts` — hospital
+`src/hospitals/HNSJDDSM/general.ts` — tabla "Balance hídrico" (por defecto)
+`src/hospitals/HNSJDDSM/mantenimiento.ts` — tabla "BH + mantenimiento": copia independiente de general + mantenimiento Holliday-Segar por bloque + SC Mosteller con talla
 
 Ver también: [[index]], [[types]], [[storage]], [[patient-screen]], [[patient-list]], [[templates]]
+
+---
+
+## Hospital → tablas
+
+Un hospital solo tiene identidad (`id`, `name`, `abbreviation`) y una lista de **tablas**.
+La tabla (`TableConfig`) es la unidad independiente: columnas, grupos, balance, formulario
+de paciente y tamaño de la tarjeta se declaran en ella. Cambiar una tabla nunca afecta a
+otra, aunque sean del mismo hospital. Se prefiere duplicar código entre tablas antes que
+compartir lógica que las acople.
+
+Cada paciente guarda `hospitalId` + `tableId`. Si falta `tableId` (pacientes antiguos) se
+usa la primera tabla del hospital (`findTable`).
 
 ---
 
@@ -16,47 +31,41 @@ STATIC: Record<string, HospitalConfig> = {
 }
 ```
 
-Hospitales integrados viven en `src/hospitals/NOMBRE.ts`.
-Hospitales custom viven en AsyncStorage. Ver [[storage]].
+Hospitales integrados viven en `src/hospitals/NOMBRE/` (un archivo por tabla + `index.ts`).
+Hospitales y tablas custom viven en AsyncStorage. Ver [[storage]].
 
 ---
 
-## Acceso síncrono (solo integrados)
+## API
 
 ```
-getHospital(id?) → HospitalConfig:
-  si id && STATIC[id] → STATIC[id]
-  sino → HNSJDDSM    // fallback al default
-
-getAllHospitals() → HospitalConfig[]:
-  retornar Object.values(STATIC)
-```
-
----
-
-## Acceso asíncrono (integrados + custom)
-
-```
-getHospitalAsync(id?) → Promise<HospitalConfig>:
-  si !id → HNSJDDSM
-  si STATIC[id] → STATIC[id]
-  customs ← storage.getCustomHospitals()
-  retornar customs.find(h → h.id == id) ?? HNSJDDSM
+getAllHospitals() → HospitalConfig[]            // solo integrados
+isBuiltInTable(hospitalId, tableId) → boolean   // tabla definida en código
+findTable(hospital, tableId?) → TableConfig     // tableId desconocido/ausente → tables[0]
 
 getAllHospitalsAsync() → Promise<HospitalConfig[]>:
-  customs ← storage.getCustomHospitals()
-  retornar [...Object.values(STATIC), ...customs]
+  customs ← storage.getCustomHospitals()        // ya normalizados (ver [[storage]])
+  integrados: si existe un custom con el mismo id, se le añaden sus tablas extra
+  + customs cuyo id no es integrado
+
+getHospitalAsync(id?) → Promise<HospitalConfig>:
+  getAllHospitalsAsync().find(id) ?? HNSJDDSM
 ```
 
 ---
 
-## Anatomía de un HospitalConfig
+## Anatomía
 
 ```
 HospitalConfig:
   id:           'HNSJDDSM'          // no cambiar en producción
   name:         'Hospital Nacional …'
-  abbreviation: 'HNS'
+  abbreviation: 'HNSJDDSM'
+  tables:       [GENERAL, …]        // la primera es la tabla por defecto
+
+TableConfig:
+  id:   'general'                   // único dentro del hospital — no cambiar en producción
+  name: 'Balance hídrico'
 
   groups: [
     { key: 'sv',  label: 'Signos vitales', bg, textColor, cellBg }
@@ -64,52 +73,54 @@ HospitalConfig:
     { key: 'egr', label: 'Egresos',        bg, textColor, cellBg }
   ]
 
+  balance: { ingresosGroup: 'ing', egresosGroup: 'egr', orinaKey: 'orina' }
+  sc:      [ { maxPeso: 10, formula: 'pediatrica', etiqueta: 'Pediátrico' }, { formula: 'adulto' } ]
+  cardPreview: ['registro', 'edad', 'peso', 'sc']
+  card:        { minHeight: 104, metricsWidth: 112, metaLines: 1 }
+
   dataCols: [
     { key: 'ta',    label: 'T/A',  width: 72, isTA: true,     group: 'sv'  }
     { key: 'pam',   label: 'PAM',  width: 48, readOnly: true, group: 'sv'  }
     { key: 'orina', label: 'Orina',width: 54,                 group: 'egr' }
-    // ...
     // ColDef con alternates:
-    { key: 'sedantes', ..., alternates: [
-      { key: 'ketamina',    ... }
-      { key: 'fentanilo',   ... }
-      { key: 'midazolam',   ... }
-      // ...
-    ]}
+    { key: 'sedantes', ..., alternates: [ { key: 'ketamina', ... }, ... ] }
   ]
 
-  patientFields: {
-    nombre:   'required'
-    edad:     'optional'
-    registro: 'required'
-    talla:    'hidden'
-  }
+  patientFields: { nombre: 'required', edad: 'optional', registro: 'required', talla: 'hidden' }
 ```
 
 ---
 
+## Cómo agregar una tabla a un hospital integrado
+
+```
+1. Crear src/hospitals/HNSJDDSM/MI_TABLA.ts
+   export const MI_TABLA: TableConfig = { id: 'mi_tabla', name: '…', … }
+
+2. Añadirla a `tables` en src/hospitals/HNSJDDSM/index.ts
+   (no la pongas primera: la primera es la que usan los pacientes sin tableId)
+```
+
 ## Cómo agregar un hospital nuevo
 
 ```
-1. Crear src/hospitals/MI_HOSPITAL.ts
-   export const MI_HOSPITAL: HospitalConfig = { ... }
+1. Crear src/hospitals/MI_HOSPITAL/ con un archivo por tabla y un index.ts:
+   export const MI_HOSPITAL: HospitalConfig = { id, name, abbreviation, tables: [ … ] }
 
 2. Registrar en src/hospitals/index.ts:
    import { MI_HOSPITAL } from './MI_HOSPITAL'
    STATIC['MI_HOSPITAL'] = MI_HOSPITAL
 
-3. Si necesita campos nuevos en TableRow:
-   añadir a src/types/index.ts
+3. Si necesita campos nuevos en TableRow: añadir a src/types/index.ts
 
-4. Si necesita layout propio:
-   crear componente y switch en app/patient/[id].tsx
-   Ver [[patient-screen]]
+4. Si una tabla necesita layout propio: componente y switch por
+   hospitalId + tableId en app/patient/[id].tsx. Ver [[patient-screen]]
 ```
 
 ---
 
-## Nota sobre calcSC
+## Superficie corporal por tabla
 
-Si el `HospitalConfig` define `calcSC: (peso) → number`,
-esa función **no se serializa** al JSON del archivo `.bhd`.
-El receptor usará la fórmula estándar. Ver [[calculations]] y [[share]].
+`TableConfig.sc` declara tramos por peso con una fórmula por nombre ('adulto' | 'pediatrica')
+y una etiqueta opcional. Como son datos (no funciones), viajan en el `.bhd` y el receptor
+calcula igual. Para una fórmula nueva: añadirla a `ScFormula` y a `SC_FORMULAS`. Ver [[calculations]].

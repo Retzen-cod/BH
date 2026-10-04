@@ -12,13 +12,14 @@ Un archivo `.bhd` es un **ZIP renombrado** (WhatsApp lo transmite sin modificar)
 
 ```
 bh_cama_5.bhd  (zip)
-  ├── hospitals.json    ← HospitalConfig[] de los hospitales usados
+  ├── hospitals.json    ← HospitalConfig[] con SOLO las tablas que usan estos pacientes
   └── cama_5.json       ← Patient data
   // si hay varios pacientes: cama_X.json, cama_Y.json …
 ```
 
 **v1 (legacy):** JSON plano `Patient | Patient[]` sin zip.
-**v2 (actual):** ZIP con `hospitals.json` + archivos de pacientes.
+**v2:** ZIP con `hospitals.json` (hospitales de una sola tabla: `groups`/`dataCols` al nivel del hospital) + archivos de pacientes.
+**Actual:** mismo ZIP, pero cada hospital trae `tables: TableConfig[]` y cada paciente `tableId`. Se distingue de v2 por la presencia de `tables`.
 
 ---
 
@@ -26,16 +27,18 @@ bh_cama_5.bhd  (zip)
 
 ```
 sharePatients(patients, allHospitals):
-  // 1. Recopilar hospitales usados
-  usedIds       ← unique(patients.map(p → p.hospitalId))
-  usedHospitals ← usedIds.map(id → allHospitals.find(h → h.id == id))
+  // 1. Recopilar hospitales usados, cada uno solo con las tablas que se usan
+  para cada patient:
+    table ← findTable(hospital(patient), patient.tableId)
+    usedHospitals[hospitalId].tables ∪= table
 
   // 2. Construir el ZIP
   label ← si 1 paciente: "cama_X" sino: "N_pacientes"
   zip ← JSZip.new()
   zip.file('hospitals.json', JSON.stringify(usedHospitals))
   para cada patient:
-    zip.file("cama_${patient.cama}.json", JSON.stringify(patient))
+    zip.file("cama_${patient.cama}.json", JSON.stringify({ ...patient, tableId: table.id }))
+    // tableId explícito: en el receptor la primera tabla del hospital puede ser otra
 
   // 3. Escribir en caché y compartir
   base64 ← zip.generateAsync({ type: 'base64' })
@@ -60,9 +63,14 @@ importBHDData(uri):
   // Detectar versión
   si zip contiene 'hospitals.json':     // v2
     hospitals ← JSON.parse(zip['hospitals.json'])
-    para cada hospital:
-      si no existe en STATIC ni en custom:
-        storage.saveCustomHospital(hospital)   // embeber para portabilidad
+    para cada hospital crudo:
+      h ← normalizeHospital(crudo)             // v2 → una tabla 'principal'
+      si no existe en el dispositivo:
+        storage.saveCustomHospital(h)          // embeber para portabilidad
+      si existe y no es v2:
+        storage.saveCustomTables(h, tablas que falten)   // nunca sobrescribe tablas existentes
+      si existe y es v2:
+        nada — sus pacientes (sin tableId) usan la primera tabla local
 
     archivos ← zip.files sin 'hospitals.json'
     pacientes ← archivos.map(f → JSON.parse(f.content))
@@ -80,8 +88,8 @@ importBHDData(uri):
 
 ---
 
-## Nota sobre funciones no serializables
+## Fórmulas
 
-`HospitalConfig.calcSC` es una función → **no se guarda en el JSON** del ZIP.
-Al importar, el receptor usará la fórmula estándar `(peso×4+7)/(peso+90)`.
+Todo lo que afecta cálculos (balance, tramos de SC) se declara como datos en la `TableConfig`,
+así que viaja en `hospitals.json` y el receptor calcula exactamente igual.
 Ver [[calculations]] y [[hospitals]].

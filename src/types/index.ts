@@ -50,6 +50,7 @@ export interface BlockSummary {
   s: number;    // Σ egresos + PI
   bh: number;   // E − S
   dh: number;   // Σ orina / peso / horas_bloque  (mL/kg/h)
+  mant?: number; // mantenimiento esperado del bloque (solo si la tabla declara `mantenimiento`)
 }
 
 // ─── Paciente ────────────────────────────────────────────────────────────────
@@ -65,6 +66,7 @@ export interface Patient {
   startHora: string;        // "07:00"
   endHora: string;          // "07:00" (igual a start = 24h)
   hospitalId: string;       // clave del hospital — e.g. "HNSJDDSM"
+  tableId?:   string;       // tabla dentro del hospital; si falta se usa la primera (pacientes antiguos)
   createdAt: string;
   rows: TableRow[];
   disabledBlocks?: number[];          // índices de bloques excluidos de BH-Total y DH-Total

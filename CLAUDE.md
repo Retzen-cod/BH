@@ -36,18 +36,18 @@ React Native app using **Expo Router** (file-based routing). The entry point is 
 
 ### Business logic (`src/utils/`)
 
-- `calculations.ts` — pure functions: `calcPAM`, `calcSC`, `calcBlocks`, `calcBHTotal`, `calcDHTotal`. No side effects.
+- `calculations.ts` — pure functions: `calcPAM`, `calcSC(peso, table)` (SC by the table's weight tiers; always re-derived for calculations, stored `patient.sc` is informational), `calcBlocks`, `calcBHTotal`, `calcDHTotal`. No side effects. `calcBlocks` takes the `TableConfig`: which columns count as ingresos/egresos/orina comes from the table (`balance` + `dataCols` groups, alternates included), never from a hardcoded field list — so editing one table never changes another's balance.
 - `storage.ts` — CRUD on `Patient[]` via AsyncStorage (key: `bh_patients`)
 - `hospitalStorage.ts` — CRUD on custom `HospitalConfig[]` (key: `bh_custom_hospitals`)
 - `settings.ts` — user preferences: `timeFormat`, `hospitalId` (key: `bh_settings`)
 
 ### Multi-hospital system (`src/hospitals/`)
 
-`HospitalConfig` defines the entire table structure for a hospital. Built-in configs live in `src/hospitals/`. To add a new hospital:
-1. Create `src/hospitals/NOMBRE.ts` implementing `HospitalConfig` from `src/types/hospital.ts`
-2. Register it in `src/hospitals/index.ts`
+Hospital → tables. `HospitalConfig` is only identity (`id`, `name`, `abbreviation`) plus `tables: TableConfig[]`. The **table** is the independent unit: groups, columns, balance, patient form and card layout live in `TableConfig`, and changing one table must never affect another — even in the same hospital. Prefer duplicating code per table over shared logic that couples tables.
 
-Custom hospitals created in-app are stored in AsyncStorage and embedded in `.bhd` exports for portability.
+- Built-in: `src/hospitals/NOMBRE/` — one file per table + `index.ts` with the `HospitalConfig`; registered in `src/hospitals/index.ts`.
+- `Patient` stores `hospitalId` + `tableId`. Missing `tableId` (old patients) → first table (`findTable`). Keep the default table first.
+- Custom hospitals/tables live in AsyncStorage. A custom entry with a built-in hospital's id only adds extra tables (`getAllHospitalsAsync` merges them). Old single-table custom hospitals are migrated on read by `normalizeHospital` (table id `'principal'`).
 
 ### `.bhd` file format
 
@@ -55,11 +55,11 @@ Proprietary transfer format for shift handoffs — a ZIP file (so WhatsApp trans
 
 ```
 bh_cama_5.bhd  (zip)
-├── hospitals.json   — embedded HospitalConfig[] for portability
+├── hospitals.json   — embedded HospitalConfig[] with only the tables these patients use
 └── cama_5.json      — Patient data
 ```
 
-Current format version is v2. `parseBHD()` handles backward compatibility with v1 (plain JSON `Patient | Patient[]` without embedded hospitals).
+Current format: hospitals carry `tables`, patients carry `tableId`. v2 files (hospitals without `tables`) are still accepted: `normalizeHospital` wraps them in one table; if the hospital already exists locally nothing is added and those patients use the local first table. Import never overwrites an existing table — it only adds missing ones.
 
 ### Cell editing flow
 
@@ -81,17 +81,18 @@ Current format version is v2. `parseBHD()` handles backward compatibility with v
 
 ---
 
-## Agregar un hospital nuevo
+## Agregar un hospital o una tabla nueva
 
-### 1. Crear la configuración del hospital
+### 1. Crear la configuración
 
-Crear `src/hospitals/NOMBRE.ts` implementando `HospitalConfig` (ver `src/types/hospital.ts`):
+Cada tabla va en su propio archivo implementando `TableConfig` (ver `src/types/hospital.ts`).
+Para una tabla nueva en un hospital existente basta con este archivo + añadirla a `tables` del hospital.
 
 ```typescript
-export const MI_HOSPITAL: HospitalConfig = {
-  id:           'MI_HOSPITAL',       // clave única — no cambiar después de producción
-  name:         'Nombre completo',
-  abbreviation: 'MH',
+// src/hospitals/MI_HOSPITAL/uci.ts
+export const UCI: TableConfig = {
+  id:   'uci',                       // único dentro del hospital — no cambiar después de producción
+  name: 'UCI adultos',
 
   groups: [
     { key: 'sv',  label: 'Signos vitales', bg: '#DBEAFE', textColor: '#1D4ED8', cellBg: '#F0F9FF' },
@@ -118,13 +119,33 @@ export const MI_HOSPITAL: HospitalConfig = {
     // ...
   ],
 
-  // Opcional: override de la fórmula de superficie corporal.
-  // Si no se define, se usa (peso × 4 + 7) / (peso + 90).
-  // calcSC: (peso) => ...,
+  // Espacio de la tarjeta en pantalla 1. Lo que se omita se ajusta al contenido.
+  card: { minHeight: 104, metricsWidth: 112, metaLines: 1 },
+
+  // Qué entra al balance: todas las columnas (y alternates) de estos grupos.
+  // Si se omite: 'ing' / 'egr' / 'orina'.
+  balance: { ingresosGroup: 'ing', egresosGroup: 'egr', orinaKey: 'orina' },
+
+  // Opcional: superficie corporal por tramos de peso (primer tramo con peso <= maxPeso).
+  // Si se omite: 'adulto' = (peso × 4 + 7) / (peso + 90) para todo peso.
+  sc: [
+    { maxPeso: 10, formula: 'pediatrica', etiqueta: 'Pediátrico' }, // (peso × 4 + 9) / 100
+    {              formula: 'adulto' },
+  ],
 };
 ```
 
-Registrar en `src/hospitals/index.ts`:
+```typescript
+// src/hospitals/MI_HOSPITAL/index.ts
+export const MI_HOSPITAL: HospitalConfig = {
+  id:           'MI_HOSPITAL',       // clave única — no cambiar después de producción
+  name:         'Nombre completo',
+  abbreviation: 'MH',
+  tables: [UCI],                     // la primera es la de por defecto
+};
+```
+
+Registrar el hospital en `src/hospitals/index.ts`:
 
 ```typescript
 import { MI_HOSPITAL } from './MI_HOSPITAL';
@@ -139,9 +160,9 @@ const STATIC: Record<string, HospitalConfig> = {
 
 ### 2. Pantalla 1 — lo que el médico ve al seleccionar un paciente
 
-La `PatientCard` en `app/index.tsx` es **genérica**: muestra cama, nombre, edad, peso, SC, horario y calcula BH/DH con `calcBlocks` sobre `patient.rows`. **No requiere cambios** al añadir un hospital.
+La `PatientCard` en `app/index.tsx` es **genérica**: muestra cama, nombre, edad, peso, SC, horario y calcula BH/DH con `calcBlocks` sobre `patient.rows`. **No requiere cambios** al añadir un hospital o tabla. Qué datos muestra lo decide `cardPreview` y cuánto espacio ocupa lo decide `card` (`minHeight`, `metricsWidth`, `metaLines`), ambos de la tabla del paciente.
 
-Lo que sí controla `patientFields` es el formulario de creación (`AddPatientModal`). Los campos `cama` y `peso` son siempre obligatorios. Los demás (`nombre`, `edad`, `registro`, `talla`) respetan el `FieldMode` que declares en `patientFields`.
+Hospital y tabla se eligen juntos en el selector de la barra superior (`HospitalPickerModal`, guarda `settings.hospitalId` + `settings.tableId`); el botón "+" crea el paciente con esa tabla. `patientFields` de esa tabla controla el formulario de creación. Los campos `cama` y `peso` son siempre obligatorios. Los demás (`nombre`, `edad`, `registro`, `talla`) respetan el `FieldMode` que declares en `patientFields`.
 
 ---
 
@@ -149,15 +170,16 @@ Lo que sí controla `patientFields` es el formulario de creación (`AddPatientMo
 
 #### Caso A: layout estándar (filas por hora + panel de bloques de 4h)
 
-No hacer nada. `app/patient/[id].tsx` carga el hospital con `getHospitalAsync(patient.hospitalId)` y lo pasa al componente `PatientTable`, que ya renderiza cualquier `HospitalConfig` de forma genérica usando sus `groups` y `dataCols`.
+No hacer nada. `app/patient/[id].tsx` carga el hospital con `getHospitalAsync(patient.hospitalId)`, resuelve la tabla con `findTable(hospital, patient.tableId)` y pasa ambos a `PatientTable`, que renderiza cualquier `TableConfig` de forma genérica usando sus `groups` y `dataCols`.
 
-#### Caso B: el hospital necesita un layout completamente diferente
+#### Caso B: la tabla necesita un layout completamente diferente
 
 1. Crear `src/components/MI_HOSPITAL_Table.tsx` con la misma firma de props que `PatientTable`:
    ```typescript
    interface Props {
      patient:      Patient;
      hospital:     HospitalConfig;
+     table:        TableConfig;
      settings:     Settings;
      onUpdateCell: (rowIndex: number, colKey: string, raw: string) => void;
      onExport:     () => void;
@@ -165,12 +187,12 @@ No hacer nada. `app/patient/[id].tsx` carga el hospital con `getHospitalAsync(pa
    }
    ```
 
-2. En `app/patient/[id].tsx`, elegir el componente según el hospital:
+2. En `app/patient/[id].tsx`, elegir el componente según hospital + tabla:
    ```typescript
    import MI_HOSPITAL_Table from '../../src/components/MI_HOSPITAL_Table';
 
    // dentro del return, reemplazar <PatientTable ... /> por:
-   {patient.hospitalId === 'MI_HOSPITAL'
+   {patient.hospitalId === 'MI_HOSPITAL' && table.id === 'uci'
      ? <MI_HOSPITAL_Table {...props} />
      : <PatientTable      {...props} />
    }
@@ -182,16 +204,17 @@ El contenedor (`[id].tsx`) no cambia: sigue manejando orientación, carga de dat
 
 ### 4. Sharing — no requiere ningún cambio
 
-`sharePatients()` en `src/utils/share.ts` empaqueta automáticamente el `HospitalConfig` completo del paciente dentro del archivo `.bhd` (zip). Al importar, `importBHDData()` en `app/index.tsx` detecta si el hospital ya existe en el dispositivo del receptor y lo guarda en AsyncStorage si no. El receptor puede abrir el archivo sin tener el hospital instalado.
+`sharePatients()` en `src/utils/share.ts` empaqueta el hospital con **solo las tablas que usan los pacientes** dentro del `.bhd` (zip). Al importar, `importBHDData()` en `app/index.tsx` guarda el hospital si no existe, o añade solo las tablas que falten; nunca sobrescribe una tabla existente. El receptor puede abrir el archivo sin tener el hospital ni la tabla instalados.
 
-El único escenario que requiere atención: si el hospital custom usa `calcSC` como función, esa función **no se serializa** al JSON del zip. El receptor usará la fórmula estándar para los cálculos de PI. Si esto importa, dejar `calcSC` sin definir y usar la estándar, o documentarlo en el hospital.
+Todo lo que afecta cálculos (balance, tramos de SC) se declara como datos en la tabla, así que viaja en el zip y el receptor calcula igual. No usar funciones en `TableConfig`: no se serializan.
 
 ---
 
-### Checklist para un hospital nuevo
+### Checklist para un hospital o tabla nueva
 
-- [ ] `src/hospitals/NOMBRE.ts` con `HospitalConfig` completo
-- [ ] Registrado en `src/hospitals/index.ts` dentro de `STATIC`
+- [ ] Un archivo `TableConfig` por tabla en `src/hospitals/NOMBRE/`, con `id` estable
+- [ ] Tabla añadida a `tables` del hospital (no como primera si ya hay pacientes sin `tableId`)
+- [ ] Hospital nuevo: `src/hospitals/NOMBRE/index.ts` registrado en `src/hospitals/index.ts` dentro de `STATIC`
 - [ ] Si el hospital usa campos nuevos en `TableRow`: añadirlos a `src/types/index.ts`
 - [ ] Si necesita layout diferente: componente en `src/components/` + switch en `app/patient/[id].tsx`
 - [ ] Si `patientFields.registro` es `'required'`, verificar que el campo esté en `TableRow` o al menos en `Patient` — actualmente es solo metadata, no columna de tabla

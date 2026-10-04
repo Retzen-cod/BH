@@ -63,10 +63,11 @@ Patient:
   registro?:  string
   peso?:      number      // kg — para DH y PI
   talla?:     number      // cm
-  sc?:        number      // auto: calcSC(peso)  → ver [[calculations]]
+  sc?:        number      // calcSC(peso, tabla) al guardar; para cálculos se re-deriva → ver [[calculations]]
   startHora:  string      // "07:00"
   endHora:    string      // "07:00" (== start → 24h)
   hospitalId: string      // clave del HospitalConfig
+  tableId?:   string      // TableConfig.id dentro del hospital; ausente → primera tabla
   createdAt:  string      // ISO 8601
   rows:       TableRow[]  // una fila por hora
 
@@ -77,19 +78,32 @@ Patient:
 
 ---
 
-## HospitalConfig — configuración de hospital
+## HospitalConfig — hospital
 
 ```
 HospitalConfig:
   id:           string     // único, no cambiar en producción
   name:         string
   abbreviation: string
+  tables:       TableConfig[] // al menos una; la primera es la de por defecto
+  isCustom?:    boolean       // true si creada por el usuario
+```
+
+---
+
+## TableConfig — tabla (unidad independiente)
+
+```
+TableConfig:
+  id:           string        // único dentro del hospital, no cambiar en producción
+  name:         string        // "UCI adultos"
   groups:       GroupDef[]    // grupos de columnas (orden importa)
   dataCols:     ColDef[]      // columnas de la tabla (sin N° y Hora)
   patientFields?: PatientFieldsDef
-  isCustom?:    boolean       // true si creada por el usuario
   cardPreview?: string[]      // campos mostrados en la card de lista
-  calcSC?:      (peso) → number  // override de fórmula (no serializable a JSON)
+  card?:        { minHeight?, metricsWidth?, metaLines? }       // espacio de la card
+  balance?:     { ingresosGroup?, egresosGroup?, orinaKey? }    // qué entra al BH
+  sc?:          ScTramo[]     // { maxPeso?, formula: 'adulto'|'pediatrica', etiqueta? } — SC por peso
 ```
 
 ---

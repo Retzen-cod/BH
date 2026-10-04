@@ -7,9 +7,9 @@ import {
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
 import { StatusBar } from 'expo-status-bar';
 import { Patient, TableRow } from '../types';
-import { HospitalConfig, ColDef } from '../types/hospital';
+import { HospitalConfig, TableConfig, ColDef } from '../types/hospital';
 import { Settings, formatHora, formatDate } from '../utils/settings';
-import { calcBlocks, calcBHTotal, calcDHTotal, calcSC } from '../utils/calculations';
+import { calcBlocks, calcBHTotal, calcDHTotal, calcSC, scEtiqueta, scDetalle, calcMantDiario, groupKeys, sumKeys } from '../utils/calculations';
 import { TableGestureRegistry, TableGestureContext } from '../gestures/tableGestures';
 import '../gestures/defaultGestures'; // registra los gestos por defecto
 import TableCell from './TableCell';
@@ -31,6 +31,7 @@ const BLOCK_W = 140;
 interface Props {
   patient:              Patient;
   hospital:             HospitalConfig;
+  table:                TableConfig;
   settings:             Settings;
   onUpdateCell:         (rowIndex: number, colKey: string, raw: string) => void;
   onBatchUpdateCells:   (updates: { rowIndex: number; colKey: string; raw: string }[]) => void;
@@ -68,11 +69,9 @@ type InferredAction = 'copy' | 'replace' | 'erase' | 'ambiguous' | 'none';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Suma los valores de las columnas de un grupo en una fila (excluye readOnly e isTotal). */
-function groupRowTotal(row: TableRow, group: string, activeCols: ColDef[]): number {
-  return activeCols
-    .filter(c => c.group === group && !c.readOnly && !c.isTotal && !c.isTA)
-    .reduce((acc, c) => acc + ((row as any)[c.key] ?? 0), 0);
+/** Suma del grupo en una fila — mismas columnas que calcBlocks (incluye alternates ocultas). */
+function groupRowTotal(row: TableRow, group: string, slots: ColDef[]): number {
+  return sumKeys(row, groupKeys(slots, group));
 }
 
 /** Resuelve la ColDef activa para un slot dado el mapa de overrides. */
@@ -85,7 +84,7 @@ function resolveActive(slot: ColDef, overrides: Record<string, string>): ColDef 
 // ─── Componente ───────────────────────────────────────────────────────────────
 
 export default function PatientTable({
-  patient, hospital, settings,
+  patient, hospital, table, settings,
   onUpdateCell, onBatchUpdateCells, onUndo, onRedo, canUndo, canRedo,
   onToggleBlock, onColOverride, onColLabelChange, onEditInfo,
   onExport, onBack,
@@ -104,17 +103,17 @@ export default function PatientTable({
   // commitDrag se reescribe cada render para capturar valores frescos
   const commitDragRef   = useRef<() => void>(() => {});
   // Contexto de datos actualizado cada render
-  const dragCtxRef      = useRef({ rows: patient.rows, slots: hospital.dataCols, activeCols: [] as typeof hospital.dataCols });
+  const dragCtxRef      = useRef({ rows: patient.rows, slots: table.dataCols, activeCols: [] as ColDef[] });
 
   // ── Sistema de gestos ─────────────────────────────────────────────────────
   // El contexto vive en un ref para que los handlers lean valores frescos
   // sin necesidad de re-crear el gesto en cada render.
   const gestureCtxRef = useRef<TableGestureContext>({
-    patient, hospital, onUndo, onRedo, onUpdateCell,
+    patient, hospital, table, onUndo, onRedo, onUpdateCell,
   });
   useEffect(() => {
-    gestureCtxRef.current = { patient, hospital, onUndo, onRedo, onUpdateCell };
-    dragCtxRef.current = { rows: patient.rows, slots: hospital.dataCols, activeCols };
+    gestureCtxRef.current = { patient, hospital, table, onUndo, onRedo, onUpdateCell };
+    dragCtxRef.current = { rows: patient.rows, slots: table.dataCols, activeCols };
     commitDragRef.current = () => {
       const drag = dragSelRef.current;
       if (!drag) return;
@@ -236,35 +235,38 @@ export default function PatientTable({
       registro:  editRegistro.trim() || undefined,
       peso:      p,
       talla:     editTalla            ? Number(editTalla)  : undefined,
-      sc:        calcSC(p),
+      sc:        calcSC(p, table, editTalla ? Number(editTalla) : undefined),
       startHora: editStartHora,
       endHora:   editStartHora,
     });
     setShowEdit(false);
   }
 
-  const pf = hospital.patientFields;
+  const pf = table.patientFields;
 
   const peso    = patient.peso ?? 70;
-  const sc      = patient.sc   ?? 1.7;
+  // SC siempre derivada del peso con la regla de la tabla (el valor guardado puede ser de otra fórmula)
+  const sc      = calcSC(peso, table, patient.talla);
+  const scTag   = scEtiqueta(peso, table);
   const rows    = patient.rows;
   const tf      = settings.timeFormat;
 
   const overrides  = patient.colOverrides ?? {};
   const colLabels  = patient.colLabels ?? {};
   const disabled   = patient.disabledBlocks ?? [];
-  const slots      = hospital.dataCols;
+  const slots      = table.dataCols;
   const activeCols = slots.map(slot => resolveActive(slot, overrides));
-  const groupMap   = Object.fromEntries(hospital.groups.map(g => [g.key, g]));
+  const groupMap   = Object.fromEntries(table.groups.map(g => [g.key, g]));
   const DATA_W     = slots.reduce((a, s) => a + s.width, 0);
   function displayLabel(slot: ColDef): string {
     return colLabels[slot.key] ?? resolveActive(slot, overrides).label;
   }
 
-  const allBlocks     = calcBlocks(rows, peso, sc);
+  const allBlocks     = calcBlocks(rows, peso, sc, table);
   const enabledBlocks = allBlocks.filter(b => !disabled.includes(b.blockIndex));
   const bhTotal       = calcBHTotal(enabledBlocks);
   const dhTotal       = calcDHTotal(enabledBlocks);
+  const mantDia       = calcMantDiario(peso, table); // undefined si la tabla no declara mantenimiento
 
   // PI de referencia para un bloque estándar de 4h
   const piRef4h = ((sc * 400 / 24) * 4).toFixed(2);
@@ -407,7 +409,7 @@ export default function PatientTable({
             : (groupMap[slot.group]?.cellBg ?? '#fff');
 
           if (slot.isTotal) {
-            const sum      = groupRowTotal(row, slot.group, activeCols);
+            const sum      = groupRowTotal(row, slot.group, slots);
             const totalBg  = groupMap[slot.group]?.bg ?? '#E5E7EB';
             return (
               <View key={slot.key} style={[styles.cell, { width: slot.width, backgroundColor: totalBg }]}>
@@ -451,7 +453,6 @@ export default function PatientTable({
           const numRows = Math.min(4, rows.length - b.blockIndex * 4);
           const cellH  = numRows * ROW_H;
           const TIME_H = 16;
-          const metricH = Math.floor((cellH - TIME_H) / 4);
           const pos     = b.bh >= 0;
 
           const metrics = [
@@ -460,6 +461,14 @@ export default function PatientTable({
             { label: 'E',  val: b.e.toFixed(2),                     color: '#065F46' },
             { label: 'S',  val: b.s.toFixed(2),                     color: '#92400E' },
           ];
+          if (b.mant != null) {
+            const diff = b.e - b.mant; // lo administrado vs lo esperado
+            metrics.push(
+              { label: 'M',   val: b.mant.toFixed(2),                              color: '#7C3AED' },
+              { label: 'E−M', val: (diff >= 0 ? '+' : '') + diff.toFixed(2), color: diff >= 0 ? '#DC2626' : '#059669' },
+            );
+          }
+          const metricH = Math.floor((cellH - TIME_H) / metrics.length);
 
           return (
             <TouchableOpacity
@@ -552,7 +561,7 @@ export default function PatientTable({
           }
 
           const colSum = rows.reduce((acc, row) => {
-            if (slot.isTotal) return acc + groupRowTotal(row, slot.group, activeCols);
+            if (slot.isTotal) return acc + groupRowTotal(row, slot.group, slots);
             return acc + ((row as any)[active.key] ?? 0);
           }, 0);
           return (
@@ -585,7 +594,7 @@ export default function PatientTable({
           <Text style={styles.btnHistoryText}>↪</Text>
         </TouchableOpacity>
         <View style={styles.headerInfo}>
-          <Text style={styles.headerCama}>Cama {patient.cama}</Text>
+          <Text style={styles.headerCama}>Cama {patient.cama}{scTag ? <Text style={styles.headerTag}>  {scTag}</Text> : null}</Text>
           {patient.nombre ? <Text style={styles.headerNombre}>{patient.nombre}</Text> : null}
           <Text style={styles.headerMeta}>
             {[patient.edad ? `${patient.edad}a` : null, `${peso} kg`, `SC ${sc} m²`].filter(Boolean).join(' · ')}
@@ -604,6 +613,12 @@ export default function PatientTable({
           <Text style={styles.headerDHVal}>{dhTotal.toFixed(2)}</Text>
           <Text style={styles.headerStatLabel}>DH mL/kg/h</Text>
         </View>
+        {mantDia != null && (
+          <View style={styles.headerStats}>
+            <Text style={styles.headerMantVal}>{mantDia.toFixed(0)} mL</Text>
+            <Text style={styles.headerStatLabel}>Mant. 24h</Text>
+          </View>
+        )}
         <TouchableOpacity style={styles.btnEdit} onPress={openEdit}>
           <Text style={styles.btnEditText}>✎ Editar</Text>
         </TouchableOpacity>
@@ -867,12 +882,12 @@ export default function PatientTable({
         >
           <ScrollView style={editStyles.sheet} keyboardShouldPersistTaps="handled">
             <Text style={editStyles.title}>Editar expediente</Text>
-            <Text style={editStyles.hospital}>{hospital.name}</Text>
+            <Text style={editStyles.hospital}>{hospital.name} · {table.name}</Text>
 
             <EditField label="N° Cama *"   value={editCama}     onChange={setEditCama} />
             <EditField label="Peso (kg) *" value={editPeso}     onChange={setEditPeso}     keyboardType="decimal-pad" />
             {editPeso ? (
-              <Text style={editStyles.scPreview}>SC ≈ {calcSC(Number(editPeso)).toFixed(2)} m²</Text>
+              <Text style={editStyles.scPreview}>SC ≈ {calcSC(Number(editPeso), table, Number(editTalla) || undefined).toFixed(2)} m²{scDetalle(Number(editPeso), table, Number(editTalla) || undefined) ? ` · ${scDetalle(Number(editPeso), table, Number(editTalla) || undefined)}` : ''}</Text>
             ) : null}
             {(pf?.nombre   ?? 'optional') !== 'hidden' && (
               <EditField label="Nombre / Iniciales" value={editNombre}   onChange={setEditNombre} />
@@ -1006,10 +1021,12 @@ const styles = StyleSheet.create({
   headerCama:         { color: '#fff',    fontSize: 15, fontWeight: '800' },
   headerNombre:       { color: '#CBD5E1', fontSize: 11 },
   headerMeta:         { color: '#94A3B8', fontSize: 10 },
+  headerTag:          { color: '#FBBF24', fontSize: 11, fontWeight: '700' },
   headerDate:         { color: '#64748B', fontSize: 9, marginTop: 1 },
   headerStats:        { alignItems: 'flex-end' },
   headerBHVal:        { fontSize: 18, fontWeight: '900' },
   headerDHVal:        { fontSize: 14, fontWeight: '700', color: '#93C5FD' },
+  headerMantVal:      { fontSize: 14, fontWeight: '700', color: '#C4B5FD' },
   headerStatLabel:    { color: '#94A3B8', fontSize: 9 },
   btnEdit:            { backgroundColor: 'rgba(255,255,255,0.15)', paddingHorizontal: 10, paddingVertical: 7, borderRadius: 8 },
   btnEditText:        { color: '#fff', fontWeight: '700', fontSize: 12 },

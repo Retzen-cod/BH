@@ -4,20 +4,30 @@ import * as Sharing from 'expo-sharing';
 import { Alert } from 'react-native';
 import { Patient } from '../types';
 import { HospitalConfig } from '../types/hospital';
+import { findTable } from '../hospitals';
 
 export async function sharePatients(patients: Patient[], allHospitals: HospitalConfig[]) {
   try {
-    const usedIds = [...new Set(patients.map(p => p.hospitalId).filter(Boolean))];
-    const usedHospitals = usedIds
-      .map(id => allHospitals.find(h => h.id === id))
-      .filter(Boolean) as HospitalConfig[];
+    // Solo se embeben las tablas que usan estos pacientes, agrupadas por hospital.
+    const usedHospitals: HospitalConfig[] = [];
+    for (const p of patients) {
+      const h = allHospitals.find(x => x.id === p.hospitalId);
+      if (!h) continue;
+      const table = findTable(h, p.tableId);
+      let entry = usedHospitals.find(x => x.id === h.id);
+      if (!entry) usedHospitals.push(entry = { ...h, tables: [] });
+      if (!entry.tables.some(t => t.id === table.id)) entry.tables.push(table);
+    }
 
     const label = patients.length === 1 ? `cama_${patients[0].cama}` : `${patients.length}_pacientes`;
     const zip = new JSZip();
 
     zip.file('hospitals.json', JSON.stringify(usedHospitals, null, 2));
     for (const patient of patients) {
-      zip.file(`cama_${patient.cama}.json`, JSON.stringify(patient, null, 2));
+      // tableId explícito: el receptor puede tener otra tabla como primera del hospital
+      const h = allHospitals.find(x => x.id === patient.hospitalId);
+      const out = h ? { ...patient, tableId: findTable(h, patient.tableId).id } : patient;
+      zip.file(`cama_${patient.cama}.json`, JSON.stringify(out, null, 2));
     }
 
     const base64 = await zip.generateAsync({ type: 'base64' });

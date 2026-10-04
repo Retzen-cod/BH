@@ -1,7 +1,7 @@
 import { GestureType } from 'react-native-gesture-handler';
 import { MutableRefObject } from 'react';
 import { Patient } from '../types';
-import { HospitalConfig } from '../types/hospital';
+import { HospitalConfig, TableConfig } from '../types/hospital';
 
 // ─── Contexto disponible para cada gesto ─────────────────────────────────────
 // Se pasa como ref para evitar closures obsoletas: lee ctx.current en el handler.
@@ -9,6 +9,7 @@ import { HospitalConfig } from '../types/hospital';
 export interface TableGestureContext {
   patient:      Patient;
   hospital:     HospitalConfig;
+  table:        TableConfig;
   onUndo:       () => void;
   onRedo:       () => void;
   onUpdateCell: (rowIndex: number, colKey: string, raw: string) => void;

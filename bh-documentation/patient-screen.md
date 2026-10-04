@@ -37,6 +37,7 @@ onMount():
 
   patient  ← storage.getPatient(id)
   hospital ← hospitals.getHospitalAsync(patient.hospitalId)
+  table    ← hospitals.findTable(hospital, patient.tableId)   // se pasa a PatientTable
   settings ← storage.getSettings()
   rowsHistory.reset(patient.rows)
 

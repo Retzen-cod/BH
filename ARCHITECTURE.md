@@ -20,10 +20,12 @@ app/
 src/
   types/
     index.ts           # TableRow, BlockSummary, Patient
-    hospital.ts        # HospitalConfig, ColDef, GroupDef, PatientFieldsDef
+    hospital.ts        # HospitalConfig, TableConfig, ColDef, GroupDef, PatientFieldsDef
 
   hospitals/
-    HNSJDDSM.ts        # Config del Hospital Nacional San Juan de Dios SM
+    HNSJDDSM/
+      index.ts         # Hospital Nacional San Juan de Dios SM (lista de tablas)
+      general.ts       # Tabla "Balance hídrico" (TableConfig)
     index.ts           # Registry de hospitales (built-in + custom)
 
   utils/
@@ -62,7 +64,7 @@ Todas las fórmulas están en `src/utils/calculations.ts` como funciones puras s
 
 ```
 calcPAM(ta)         → (S + 2D) / 3
-calcSC(peso)        → (peso × 4 + 7) / (peso + 90)       — fórmula de Mosteller simplificada
+calcSC(peso, tabla) → por tramos de la tabla: 'adulto' (peso × 4 + 7) / (peso + 90) · 'pediatrica' (peso × 4 + 9) / 100
 calcBlocks(rows)    → bloques de 4h con PI, E, S, BH, DH
 calcBHTotal(blocks) → Σ BH con signo
 calcDHTotal(blocks) → Σ DH / n bloques
@@ -95,7 +97,7 @@ Compatibilidad hacia atrás: `parseBHD()` detecta el campo `v` y maneja el forma
 - `groups` — grupos de columnas con colores
 - `dataCols` — columnas con ancho, tipo y grupo al que pertenecen
 - `patientFields` — qué campos del formulario de creación son hidden/optional/required
-- `calcSC` — override opcional de la fórmula de superficie corporal
+- `sc` — tramos de superficie corporal por peso (fórmula por nombre + etiqueta, e.g. "Pediátrico")
 
 Los hospitales custom se guardan en AsyncStorage y se incluyen automáticamente en el `.bhd` al compartir, para que el receptor pueda importar sin tener el hospital instalado.
 

@@ -98,7 +98,9 @@
 │   ├── hooks
 │   │   └── useUndoRedo.ts
 │   ├── hospitals
-│   │   ├── HNSJDDSM.ts
+│   │   ├── HNSJDDSM
+│   │   │   ├── general.ts
+│   │   │   └── index.ts
 │   │   └── index.ts
 │   ├── types
 │   │   ├── hospital.ts

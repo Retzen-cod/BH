@@ -1,9 +1,13 @@
-import { HospitalConfig } from '../types/hospital';
+import { TableConfig } from '../../types/hospital';
 
-export const HNSJDDSM: HospitalConfig = {
-  id:           'HNSJDDSM',
-  name:         'Hospital Nacional San Juan de Dios, San Miguel',
-  abbreviation: 'HNSJDDSM',
+/**
+ * Tabla alternativa del HNSJDDSM: igual a "Balance hídrico" (general.ts) + mantenimiento
+ * calculado por bloque. Es una COPIA independiente a propósito: cambiar general.ts no
+ * afecta esta tabla ni viceversa.
+ */
+export const MANTENIMIENTO: TableConfig = {
+  id:   'mantenimiento',    // no cambiar después de producción (los pacientes lo guardan)
+  name: 'BH + mantenimiento',
 
   groups: [
     { key: 'sv',  label: 'Signos vitales', bg: '#E2ECF8', textColor: '#2A4A80', cellBg: '#F5F8FD' },
@@ -11,7 +15,31 @@ export const HNSJDDSM: HospitalConfig = {
     { key: 'egr', label: 'Egresos',        bg: '#EDE8D8', textColor: '#7A5020', cellBg: '#F8F5EC' },
   ],
 
+  balance: {
+    ingresosGroup: 'ing',
+    egresosGroup:  'egr',
+    orinaKey:      'orina',
+  },
+
+  // ≤ 10 kg: fórmula pediátrica y etiqueta "Pediátrico"; > 10 kg: fórmula de adulto
+  sc: [
+    { maxPeso: 10, formula: 'pediatrica', etiqueta: 'Pediátrico' },
+    {              formula: 'adulto' },
+  ],
+
+  // Con talla: Mosteller √(talla × peso / 3600). Sin talla: los tramos `sc` de arriba.
+  scConTalla: 'mosteller',
+
+  // Mantenimiento esperado por bloque (M), E − M y total 24h
+  mantenimiento: { formula: 'hollidaySegar' },
+
   cardPreview: ['registro', 'edad', 'peso', 'sc'],
+
+  card: {
+    minHeight:    104,
+    metricsWidth: 112,
+    metaLines:    1,
+  },
 
   patientFields: {
     nombre:   'optional',

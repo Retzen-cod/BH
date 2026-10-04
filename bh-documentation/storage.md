@@ -64,7 +64,12 @@ KEY = 'bh_custom_hospitals'
 getCustomHospitals() → HospitalConfig[]:
   raw ← AsyncStorage.getItem(KEY)
   si !raw → []
-  sino → JSON.parse(raw)
+  sino → JSON.parse(raw).map(normalizeHospital)
+
+normalizeHospital(raw) → HospitalConfig:
+  // formato antiguo: groups/dataCols/… al nivel del hospital, sin `tables`
+  si raw.tables es array → raw
+  sino → { id, name, abbreviation, isCustom, tables: [{ id: 'principal', name, ...resto }] }
 
 saveCustomHospital(h):
   list ← getCustomHospitals()
@@ -76,6 +81,14 @@ saveCustomHospital(h):
 deleteCustomHospital(id):
   list ← getCustomHospitals()
   AsyncStorage.setItem(KEY, JSON.stringify(list.filter(h → h.id ≠ id)))
+
+saveCustomTables(hospital, tables):
+  // añade/reemplaza tablas en la entrada custom del hospital (la crea si no existe).
+  // Con el id de un hospital integrado, la entrada solo aporta tablas extra
+  // (getAllHospitalsAsync las fusiona, ver [[hospitals]]).
+
+deleteCustomTable(hospitalId, tableId):
+  quita la tabla; si la entrada queda sin tablas, borra la entrada
 ```
 
 ---
@@ -88,6 +101,7 @@ KEY = 'bh_settings'
 Settings:
   timeFormat: '12h' | '24h'
   hospitalId: string
+  tableId?:   string   // tabla elegida en el selector de la barra superior; la usa el botón "+"
 
 DEFAULTS = { timeFormat: '24h', hospitalId: 'HNSJDDSM' }
 

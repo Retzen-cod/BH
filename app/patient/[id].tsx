@@ -6,7 +6,7 @@ import * as NavigationBar from 'expo-navigation-bar';
 import { useKeepAwake } from 'expo-keep-awake';
 import { Patient, TableRow } from '../../src/types';
 import { HospitalConfig } from '../../src/types/hospital';
-import { getHospitalAsync } from '../../src/hospitals';
+import { getHospitalAsync, findTable } from '../../src/hospitals';
 import { getPatient, savePatient } from '../../src/utils/storage';
 import { sharePatients } from '../../src/utils/share';
 import { getSettings, Settings } from '../../src/utils/settings';
@@ -162,6 +162,7 @@ export default function PatientScreen() {
     <PatientTable
       patient={patient}
       hospital={hospital}
+      table={findTable(hospital, patient.tableId)}
       settings={settings}
       onUpdateCell={handleUpdateCell}
       onBatchUpdateCells={handleBatchUpdateCells}

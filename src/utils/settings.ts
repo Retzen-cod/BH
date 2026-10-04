@@ -5,6 +5,7 @@ const KEY = 'bh_settings';
 export interface Settings {
   timeFormat: '12h' | '24h';
   hospitalId: string;
+  tableId?:   string; // tabla por defecto al crear paciente; si falta, la primera del hospital
 }
 
 const DEFAULTS: Settings = { timeFormat: '24h', hospitalId: 'HNSJDDSM' };

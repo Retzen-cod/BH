@@ -25,6 +25,7 @@ Los gestos viven fuera de `PatientTable` → se pueden añadir sin tocarlo.
 interface TableGestureContext:
   patient:      Patient
   hospital:     HospitalConfig
+  table:        TableConfig
   onUndo:       () → void
   onRedo:       () → void
   onUpdateCell: (rowIndex, colKey, raw) → void

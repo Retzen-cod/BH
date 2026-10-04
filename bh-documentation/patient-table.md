@@ -116,7 +116,7 @@ commitDrag():
 para cada bloque de 4 horas:
   si bloque está en patient.disabledBlocks → mostrar tachado/gris
   sino:
-    calcBlocks(rows, peso, sc)   // ver [[calculations]]
+    calcBlocks(rows, peso, sc, table)   // ver [[calculations]]
     mostrar: PI, E, S, BH, DH
   onPress → onToggleBlock(blockIndex)
 ```

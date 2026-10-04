@@ -68,7 +68,7 @@ AddPatientModal(hospital):
 
   onConfirm():
     validar campos required
-    sc ← calcSC(peso)   // ver [[calculations]]
+    sc ← calcSC(peso, tabla)   // ver [[calculations]]
     rows ← buildEmptyRows(startHora, endHora)
     patient = { id: uuid, cama, nombre, peso, sc, rows, hospitalId, ... }
     storage.savePatient(patient)
@@ -88,7 +88,7 @@ exportar(pacientesSeleccionados):
 ```
 PatientCard(patient):
   mostrar: cama, nombre, edad, peso, SC
-  calcular bloques BH/DH con [[calculations]].calcBlocks(rows, peso, sc)
+  calcular bloques BH/DH con [[calculations]].calcBlocks(rows, peso, sc, table) — sin tabla se muestra "—"
   colorear BH según rango:
     > 0   → azul (positivo)
     < 0   → rojo (negativo)

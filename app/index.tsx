@@ -17,11 +17,11 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { Patient } from '../src/types';
 import { getPatients, savePatient, deletePatient, importPatient } from '../src/utils/storage';
 import { consumePendingImport } from '../src/utils/pendingImport';
-import { buildEmptyRows, calcBlocks, calcBHTotal, calcDHTotal, calcSC } from '../src/utils/calculations';
+import { buildEmptyRows, calcBlocks, calcBHTotal, calcDHTotal, calcSC, scEtiqueta, scDetalle } from '../src/utils/calculations';
 import { getSettings, saveSettings, formatHora, formatDate, Settings } from '../src/utils/settings';
-import { getAllHospitalsAsync } from '../src/hospitals';
-import { HospitalConfig, FieldMode, PatientFieldsDef } from '../src/types/hospital';
-import { saveCustomHospital } from '../src/utils/hospitalStorage';
+import { getAllHospitalsAsync, findTable } from '../src/hospitals';
+import { HospitalConfig, TableConfig, FieldMode, PatientFieldsDef } from '../src/types/hospital';
+import { saveCustomHospital, saveCustomTables, normalizeHospital } from '../src/utils/hospitalStorage';
 import { sharePatients } from '../src/utils/share';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -75,14 +75,14 @@ function calcDuracion(start: string, end: string): number {
  * Parsea un archivo .bhd.
  * Soporta formato v2 { v, patients, hospitals } y el formato antiguo Patient | Patient[].
  */
-function parseBHD(raw: string): { patients: Patient[]; hospitals: HospitalConfig[] } {
+function parseBHD(raw: string): { patients: Patient[]; hospitals: any[] } {
   const data = JSON.parse(raw);
   if (!data || data.v !== 2 || !Array.isArray(data.patients)) {
     throw new Error('Formato .bhd no reconocido. Se requiere formato v2.');
   }
   return {
     patients:  data.patients  as Patient[],
-    hospitals: Array.isArray(data.hospitals) ? data.hospitals as HospitalConfig[] : [],
+    hospitals: Array.isArray(data.hospitals) ? data.hospitals : [], // crudos: pueden venir sin `tables`
   };
 }
 
@@ -127,58 +127,88 @@ function HourSelector({
 // ─── Modal selector de hospital (con buscador) ───────────────────────────────
 
 function HospitalPickerModal({
-  visible, hospitals, selectedId, onSelect, onClose,
+  visible, hospitals, selectedId, selectedTableId, onSelect, onClose,
 }: {
   visible: boolean;
   hospitals: HospitalConfig[];
   selectedId: string;
-  onSelect: (h: HospitalConfig) => void;
+  selectedTableId?: string;
+  onSelect: (h: HospitalConfig, t: TableConfig) => void;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState('');
+  const q = query.toLowerCase();
   const filtered = hospitals.filter((h) =>
-    h.name.toLowerCase().includes(query.toLowerCase()) ||
-    h.abbreviation.toLowerCase().includes(query.toLowerCase())
+    h.name.toLowerCase().includes(q) ||
+    h.abbreviation.toLowerCase().includes(q) ||
+    h.tables.some(t => t.name.toLowerCase().includes(q))
   );
+
+  function pick(h: HospitalConfig, t: TableConfig) {
+    onSelect(h, t); onClose(); setQuery('');
+  }
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <TouchableOpacity style={styles.pickerOverlay} activeOpacity={1} onPress={onClose}>
         <TouchableOpacity activeOpacity={1} style={styles.pickerSheet}>
-          <Text style={styles.pickerTitle}>Seleccionar hospital</Text>
+          <Text style={styles.pickerTitle}>Seleccionar hospital y tabla</Text>
 
           <TextInput
             style={styles.pickerSearch}
-            placeholder="Buscar hospital..."
+            placeholder="Buscar hospital o tabla..."
             placeholderTextColor="#9CA3AF"
             value={query}
             onChangeText={setQuery}
-            autoFocus
             clearButtonMode="while-editing"
           />
 
-          <ScrollView style={{ maxHeight: 320 }} keyboardShouldPersistTaps="handled">
+          <ScrollView style={{ maxHeight: 380 }} keyboardShouldPersistTaps="handled">
             {filtered.length === 0 && (
               <Text style={styles.pickerEmpty}>Sin resultados</Text>
             )}
             {filtered.map((h) => {
-              const sel = h.id === selectedId;
+              const selTable = h.id === selectedId ? findTable(h, selectedTableId) : undefined;
+
+              // Hospital de una sola tabla: una fila, como antes
+              if (h.tables.length === 1) {
+                const sel = !!selTable;
+                return (
+                  <TouchableOpacity
+                    key={h.id}
+                    style={[styles.pickerItem, sel && styles.pickerItemSelected]}
+                    onPress={() => pick(h, h.tables[0])}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.pickerItemName, sel && { color: '#2563EB' }]}>{h.name}</Text>
+                      <Text style={styles.pickerItemMeta}>{h.abbreviation} · {h.tables[0].name}</Text>
+                    </View>
+                    {sel && <Text style={styles.pickerCheck}>✓</Text>}
+                  </TouchableOpacity>
+                );
+              }
+
+              // Varias tablas: encabezado del hospital + una fila por tabla (texto completo)
               return (
-                <TouchableOpacity
-                  key={h.id}
-                  style={[styles.pickerItem, sel && styles.pickerItemSelected]}
-                  onPress={() => { onSelect(h); onClose(); setQuery(''); }}
-                >
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.pickerItemName, sel && { color: '#2563EB' }]}>
-                      {h.name}
-                    </Text>
-                    <Text style={styles.pickerItemMeta}>
-                      {h.abbreviation} · {h.dataCols.length} columnas · {h.groups.length} grupos
-                    </Text>
+                <View key={h.id}>
+                  <View style={styles.pickerHospitalHeader}>
+                    <Text style={styles.pickerItemName}>{h.name}</Text>
+                    <Text style={styles.pickerItemMeta}>{h.abbreviation}</Text>
                   </View>
-                  {sel && <Text style={styles.pickerCheck}>✓</Text>}
-                </TouchableOpacity>
+                  {h.tables.map((t) => {
+                    const sel = selTable?.id === t.id;
+                    return (
+                      <TouchableOpacity
+                        key={t.id}
+                        style={[styles.pickerItem, styles.pickerTableItem, sel && styles.pickerItemSelected]}
+                        onPress={() => pick(h, t)}
+                      >
+                        <Text style={[styles.pickerTableName, sel && { color: '#2563EB' }]}>{t.name}</Text>
+                        {sel && <Text style={styles.pickerCheck}>✓</Text>}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
               );
             })}
           </ScrollView>
@@ -200,13 +230,14 @@ function fieldMode(fields: PatientFieldsDef | undefined, key: keyof PatientField
 }
 
 function AddPatientModal({
-  visible, onClose, onSave, timeFormat, defaultHospitalId, allHospitals,
+  visible, onClose, onSave, timeFormat, defaultHospitalId, defaultTableId, allHospitals,
 }: {
   visible: boolean;
   onClose: () => void;
   onSave: (p: Patient) => Promise<void>;
   timeFormat: '12h' | '24h';
   defaultHospitalId: string;
+  defaultTableId?: string;
   allHospitals: HospitalConfig[];
 }) {
   const [cama, setCama]         = useState('');
@@ -216,27 +247,14 @@ function AddPatientModal({
   const [peso, setPeso]         = useState('');
   const [talla, setTalla]       = useState('');
   const [startHora, setStart]   = useState('07:00');
-  const [selHospitalId, setSelHospitalId] = useState(defaultHospitalId);
-  const [showHPicker, setShowHPicker]     = useState(false);
-  const [hQuery, setHQuery]               = useState('');
-
-  // Sincronizar hospital por defecto al abrir el modal
-  React.useEffect(() => {
-    if (visible) setSelHospitalId(defaultHospitalId);
-  }, [visible, defaultHospitalId]);
-
-  const selHospital = allHospitals.find(h => h.id === selHospitalId) ?? allHospitals[0];
-  const pf = selHospital?.patientFields; // atajo
-
-  const filteredH = allHospitals.filter((h) =>
-    h.name.toLowerCase().includes(hQuery.toLowerCase()) ||
-    h.abbreviation.toLowerCase().includes(hQuery.toLowerCase())
-  );
+  // Hospital y tabla vienen del selector de la barra superior (settings)
+  const selHospital = allHospitals.find(h => h.id === defaultHospitalId) ?? allHospitals[0];
+  const selTable    = selHospital ? findTable(selHospital, defaultTableId) : undefined;
+  const pf = selTable?.patientFields; // atajo
 
   function reset() {
     setCama(''); setNombre(''); setEdad(''); setRegistro('');
     setPeso(''); setTalla(''); setStart('07:00');
-    setShowHPicker(false); setHQuery('');
   }
 
   async function handleSave() {
@@ -264,7 +282,7 @@ function AddPatientModal({
     try {
       const p  = Number(peso);
       const t  = Number(talla);
-      const sc = calcSC(p);
+      const sc = calcSC(p, selTable, talla ? t : undefined);
       const patient: Patient = {
         id: uuidv4(),
         cama: cama.trim(),
@@ -277,6 +295,7 @@ function AddPatientModal({
         startHora,
         endHora: startHora,
         hospitalId: selHospital?.id ?? defaultHospitalId,
+        tableId:    selTable?.id,
         createdAt: new Date().toISOString(),
         rows: buildEmptyRows(startHora, startHora),
       };
@@ -298,52 +317,10 @@ function AddPatientModal({
         <ScrollView style={styles.modalBox} keyboardShouldPersistTaps="handled">
           <Text style={styles.modalTitle}>Nuevo paciente</Text>
 
-          {/* ── Selector de hospital ── */}
-          <View style={styles.field}>
-            <Text style={styles.fieldLabel}>Hospital</Text>
-            <TouchableOpacity
-              style={styles.hospitalPickerBtn}
-              onPress={() => setShowHPicker(!showHPicker)}
-            >
-              <View style={{ flex: 1 }}>
-                <Text style={styles.hospitalPickerName} numberOfLines={1}>
-                  {selHospital?.name ?? 'Seleccionar...'}
-                </Text>
-                <Text style={styles.hospitalPickerMeta}>
-                  {selHospital?.abbreviation} · {selHospital?.dataCols.length} columnas
-                </Text>
-              </View>
-              <Text style={styles.hospitalPickerArrow}>{showHPicker ? '▲' : '▼'}</Text>
-            </TouchableOpacity>
-
-            {showHPicker && (
-              <View style={styles.hospitalInlineList}>
-                <TextInput
-                  style={styles.hospitalInlineSearch}
-                  placeholder="Buscar hospital..."
-                  placeholderTextColor="#9CA3AF"
-                  value={hQuery}
-                  onChangeText={setHQuery}
-                  autoFocus
-                />
-                {filteredH.map((h) => (
-                  <TouchableOpacity
-                    key={h.id}
-                    style={[styles.hospitalInlineItem, h.id === selHospitalId && styles.hospitalInlineItemSel]}
-                    onPress={() => { setSelHospitalId(h.id); setShowHPicker(false); setHQuery(''); }}
-                  >
-                    <Text style={[styles.hospitalInlineItemName, h.id === selHospitalId && { color: '#2563EB' }]}>
-                      {h.name}
-                    </Text>
-                    <Text style={styles.pickerItemMeta}>
-                      {h.abbreviation} · {h.dataCols.length} col · {h.groups.length} grupos
-                    </Text>
-                    {h.id === selHospitalId && <Text style={styles.pickerCheck}>✓</Text>}
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
-          </View>
+          {/* ── Hospital · tabla (se cambian desde el selector de la barra superior) ── */}
+          <Text style={styles.modalHospital}>
+            {selHospital?.name}{selTable && selHospital && selHospital.tables.length > 1 ? ` · ${selTable.name}` : ''}
+          </Text>
 
           {/* ── Campos fijos (siempre obligatorios) ── */}
           <Field label="N° Cama *" value={cama} onChange={setCama} />
@@ -351,7 +328,8 @@ function AddPatientModal({
 
           {peso ? (
             <Text style={styles.scPreview}>
-              SC ≈ {calcSC(Number(peso)).toFixed(2)} m²
+              SC ≈ {calcSC(Number(peso), selTable, Number(talla) || undefined).toFixed(2)} m²
+              {scDetalle(Number(peso), selTable, Number(talla) || undefined) ? ` · ${scDetalle(Number(peso), selTable, Number(talla) || undefined)}` : ''}
             </Text>
           ) : null}
 
@@ -446,11 +424,11 @@ const CARD_FIELD_FORMATTERS: Record<string, (p: Patient) => string | null> = {
 const DEFAULT_CARD_PREVIEW = ['edad', 'peso', 'sc'];
 
 function PatientCard({
-  patient, hospital, onPress, onLongPress, onDelete, onShare, onEdit,
+  patient, table, onPress, onLongPress, onDelete, onShare, onEdit,
   timeFormat, selected, multiSelectMode,
 }: {
   patient: Patient;
-  hospital: HospitalConfig | undefined;
+  table: TableConfig | undefined;
   onPress: () => void;
   onLongPress: () => void;
   onDelete: () => void;
@@ -460,16 +438,24 @@ function PatientCard({
   selected: boolean;
   multiSelectMode: boolean;
 }) {
-  const enabledBlocks = calcBlocks(patient.rows, patient.peso ?? 70, patient.sc ?? 1.7)
-    .filter(b => !(patient.disabledBlocks ?? []).includes(b.blockIndex));
+  // SC siempre derivada del peso con la regla de la tabla (el valor guardado puede ser de otra fórmula)
+  const peso  = patient.peso ?? 70;
+  const sc    = calcSC(peso, table, patient.talla);
+  const scTag = scEtiqueta(peso, table);
+  // Sin la tabla no se sabe qué columnas entran al balance → se muestra "—".
+  const enabledBlocks = table
+    ? calcBlocks(patient.rows, peso, sc, table)
+        .filter(b => !(patient.disabledBlocks ?? []).includes(b.blockIndex))
+    : [];
   const bh         = calcBHTotal(enabledBlocks);
   const dh         = calcDHTotal(enabledBlocks);
   const startLabel = formatHora(patient.startHora ?? '07:00', timeFormat);
   const endLabel   = formatHora(patient.endHora   ?? '07:00', timeFormat);
 
-  const previewKeys = hospital?.cardPreview ?? DEFAULT_CARD_PREVIEW;
+  const previewKeys = table?.cardPreview ?? DEFAULT_CARD_PREVIEW;
+  const layout      = table?.card ?? {};
   const metaItems   = previewKeys
-    .map(key => CARD_FIELD_FORMATTERS[key]?.(patient) ?? null)
+    .map(key => CARD_FIELD_FORMATTERS[key]?.({ ...patient, sc }) ?? null)
     .filter(Boolean) as string[];
 
   function showMenu() {
@@ -483,7 +469,7 @@ function PatientCard({
 
   return (
     <TouchableOpacity
-      style={[styles.card, selected && styles.cardSelected]}
+      style={[styles.card, layout.minHeight != null && { minHeight: layout.minHeight }, selected && styles.cardSelected]}
       onPress={onPress}
       onLongPress={onLongPress}
       activeOpacity={0.75}
@@ -498,21 +484,22 @@ function PatientCard({
       <View style={styles.cardLeft}>
         <View style={styles.cardTitleRow}>
           <Text style={styles.cardCama}>Cama {patient.cama}</Text>
+          {scTag ? <Text style={styles.cardTag}>{scTag}</Text> : null}
           {patient.createdAt ? (
             <Text style={styles.cardDate}>{formatDate(patient.createdAt)}</Text>
           ) : null}
         </View>
         {patient.nombre ? <Text style={styles.cardNombre}>{patient.nombre}</Text> : null}
         {metaItems.length > 0 && (
-          <Text style={styles.cardMeta}>{metaItems.join(' · ')}</Text>
+          <Text style={styles.cardMeta} numberOfLines={layout.metaLines}>{metaItems.join(' · ')}</Text>
         )}
         <Text style={styles.cardHorario}>{startLabel} → {endLabel}</Text>
       </View>
 
-      <View style={styles.cardRight}>
-        <Text style={[styles.cardBH, { color: bhColor(bh) }]}>{sign(bh)} mL</Text>
+      <View style={[styles.cardRight, layout.metricsWidth != null && { width: layout.metricsWidth }]}>
+        <Text style={[styles.cardBH, { color: bhColor(bh) }]} numberOfLines={1} adjustsFontSizeToFit>{table ? `${sign(bh)} mL` : '—'}</Text>
         <Text style={styles.cardMetric}>BH</Text>
-        <Text style={styles.cardDH}>{dh.toFixed(2)}</Text>
+        <Text style={styles.cardDH}>{table ? dh.toFixed(2) : '—'}</Text>
         <Text style={styles.cardMetric}>mL/kg/h DH</Text>
       </View>
 
@@ -561,7 +548,8 @@ function EditPatientModal({
   }, [patient]);
 
   const hospital = allHospitals.find(h => h.id === patient?.hospitalId);
-  const pf       = hospital?.patientFields;
+  const table    = hospital ? findTable(hospital, patient?.tableId) : undefined;
+  const pf       = table?.patientFields;
 
   function handleSave() {
     if (!patient) return;
@@ -581,7 +569,7 @@ function EditPatientModal({
       registro:  registro.trim() || undefined,
       peso:      p,
       talla:     talla            ? t : undefined,
-      sc:        calcSC(p),
+      sc:        calcSC(p, table, talla ? t : undefined),
       startHora,
       endHora:   startHora,
     });
@@ -597,7 +585,7 @@ function EditPatientModal({
         <ScrollView style={styles.modalBox} keyboardShouldPersistTaps="handled">
           <Text style={styles.modalTitle}>Editar expediente</Text>
           {hospital && (
-            <Text style={styles.modalHospital}>{hospital.name}</Text>
+            <Text style={styles.modalHospital}>{hospital.name} · {table?.name}</Text>
           )}
 
           <Field label="N° Cama *"  value={cama}  onChange={setCama} />
@@ -605,7 +593,8 @@ function EditPatientModal({
 
           {peso ? (
             <Text style={styles.scPreview}>
-              SC ≈ {calcSC(Number(peso)).toFixed(2)} m²
+              SC ≈ {calcSC(Number(peso), table, Number(talla) || undefined).toFixed(2)} m²
+              {scDetalle(Number(peso), table, Number(talla) || undefined) ? ` · ${scDetalle(Number(peso), table, Number(talla) || undefined)}` : ''}
             </Text>
           ) : null}
 
@@ -686,11 +675,20 @@ export default function PatientList() {
       return;
     }
 
-    // Importar hospitales que no existan aún en el dispositivo
+    // Importar hospitales y tablas que no existan aún en el dispositivo.
+    // Las tablas existentes nunca se sobrescriben: cada tabla es independiente.
     const currentHospitals = await getAllHospitalsAsync();
-    for (const h of incoming) {
-      const exists = currentHospitals.some(e => e.id === h.id);
-      if (!exists) await saveCustomHospital(h);
+    for (const raw of incoming) {
+      const isLegacy = !Array.isArray(raw?.tables); // .bhd de versiones sin tablas
+      const h        = normalizeHospital(raw);
+      const existing = currentHospitals.find(e => e.id === h.id);
+      if (!existing) {
+        await saveCustomHospital(h);
+      } else if (!isLegacy) {
+        const missing = h.tables.filter(t => !existing.tables.some(e => e.id === t.id));
+        if (missing.length) await saveCustomTables(existing, missing);
+      }
+      // legacy + hospital existente: sus pacientes (sin tableId) usan la primera tabla local
     }
 
     // Importar pacientes — con resolución de conflictos por ID
@@ -766,7 +764,7 @@ export default function PatientList() {
       const zip = await JSZip.loadAsync(base64, { base64: true });
 
       const hospitalsFile = zip.file('hospitals.json');
-      const hospitals: HospitalConfig[] = hospitalsFile
+      const hospitals: any[] = hospitalsFile
         ? JSON.parse(await hospitalsFile.async('string'))
         : [];
 
@@ -939,8 +937,14 @@ export default function PatientList() {
       <View style={styles.topBar}>
         <Text style={styles.topBarTitle}>Balance Hídrico</Text>
         <TouchableOpacity style={styles.hospitalBtn} onPress={() => setShowHospitalPicker(true)}>
-          <Text style={styles.hospitalBtnText}>
-            {(allHospitals.find(h => h.id === settings.hospitalId) ?? allHospitals[0])?.abbreviation ?? 'HNSJ'} ▾
+          <Text style={styles.hospitalBtnText} numberOfLines={1}>
+            {(() => {
+              const h = allHospitals.find(x => x.id === settings.hospitalId) ?? allHospitals[0];
+              if (!h) return 'HNSJ ▾';
+              return h.tables.length > 1
+                ? `${h.abbreviation} · ${findTable(h, settings.tableId).name} ▾`
+                : `${h.abbreviation} ▾`;
+            })()}
           </Text>
         </TouchableOpacity>
         {/* SOLO DESARROLLADOR — descomentar para acceder al editor de plantillas */}
@@ -994,7 +998,7 @@ export default function PatientList() {
           return (
             <PatientCard
               patient={p}
-              hospital={allHospitals.find(h => h.id === p.hospitalId)}
+              table={(() => { const h = allHospitals.find(x => x.id === p.hospitalId); return h && findTable(h, p.tableId); })()}
               onPress={() =>
                 multiSelectMode ? toggleSelect(p.id) : router.push(`/patient/${p.id}`)
               }
@@ -1081,6 +1085,7 @@ export default function PatientList() {
         onSave={handleSave}
         timeFormat={settings.timeFormat}
         defaultHospitalId={settings.hospitalId}
+        defaultTableId={settings.tableId}
         allHospitals={allHospitals}
       />
 
@@ -1088,8 +1093,9 @@ export default function PatientList() {
         visible={showHospitalPicker}
         hospitals={allHospitals}
         selectedId={settings.hospitalId}
-        onSelect={async (h) => {
-          const updated = await saveSettings({ hospitalId: h.id });
+        selectedTableId={settings.tableId}
+        onSelect={async (h, t) => {
+          const updated = await saveSettings({ hospitalId: h.id, tableId: t.id });
           setSettings(updated);
         }}
         onClose={() => setShowHospitalPicker(false)}
@@ -1110,6 +1116,7 @@ const styles = StyleSheet.create({
   },
   topBarTitle:    { flex: 1, color: '#fff', fontSize: 18, fontWeight: '800' },
   hospitalBtn: {
+    maxWidth: 220,
     backgroundColor: 'rgba(255,255,255,0.15)', paddingHorizontal: 12, paddingVertical: 6,
     borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)',
   },
@@ -1137,6 +1144,10 @@ const styles = StyleSheet.create({
   cardLeft:    { flex: 1 },
   cardCama:    { fontSize: 17, fontWeight: '700', color: '#111827' },
   cardDate:    { fontSize: 11, color: '#9CA3AF', fontVariant: ['tabular-nums'] },
+  cardTag:     {
+    fontSize: 10, fontWeight: '700', color: '#B45309', backgroundColor: '#FEF3C7',
+    paddingHorizontal: 6, paddingVertical: 1, borderRadius: 6, overflow: 'hidden',
+  },
   cardNombre:  { fontSize: 13, color: '#6B7280', marginTop: 2 },
   cardMeta:    { fontSize: 12, color: '#9CA3AF', marginTop: 2 },
   cardHorario: { fontSize: 11, color: '#6B7280', marginTop: 3 },
@@ -1286,6 +1297,9 @@ const styles = StyleSheet.create({
   pickerItemName:     { fontSize: 14, fontWeight: '600', color: '#111827' },
   pickerItemMeta:     { fontSize: 12, color: '#9CA3AF', marginTop: 1 },
   pickerCheck:        { fontSize: 18, color: '#2563EB', marginLeft: 8 },
+  pickerHospitalHeader: { paddingTop: 12, paddingBottom: 4, paddingHorizontal: 4 },
+  pickerTableItem:    { paddingLeft: 16 },
+  pickerTableName:    { flex: 1, fontSize: 14, color: '#374151' },
   pickerEmpty:        { textAlign: 'center', color: '#9CA3AF', paddingVertical: 24, fontSize: 14 },
   pickerCancel: {
     marginTop: 16, paddingVertical: 14, borderRadius: 10,
@@ -1293,27 +1307,4 @@ const styles = StyleSheet.create({
   },
   pickerCancelText: { fontSize: 15, fontWeight: '600', color: '#6B7280' },
 
-  // ─── Hospital Inline Picker (dentro de AddPatientModal) ──────────────────
-  hospitalPickerBtn: {
-    flexDirection: 'row', alignItems: 'center',
-    borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 8,
-    paddingHorizontal: 12, paddingVertical: 10, backgroundColor: '#F9FAFB',
-  },
-  hospitalPickerName:  { fontSize: 14, fontWeight: '600', color: '#111827' },
-  hospitalPickerMeta:  { fontSize: 12, color: '#9CA3AF', marginTop: 2 },
-  hospitalPickerArrow: { fontSize: 14, color: '#6B7280', marginLeft: 8 },
-  hospitalInlineList: {
-    borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 8,
-    marginTop: 4, overflow: 'hidden', backgroundColor: '#fff',
-  },
-  hospitalInlineSearch: {
-    borderBottomWidth: 1, borderBottomColor: '#E5E7EB',
-    paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: '#111827',
-  },
-  hospitalInlineItem: {
-    paddingHorizontal: 12, paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#F3F4F6',
-  },
-  hospitalInlineItemSel: { backgroundColor: '#EFF6FF' },
-  hospitalInlineItemName: { fontSize: 14, fontWeight: '600', color: '#111827' },
 });

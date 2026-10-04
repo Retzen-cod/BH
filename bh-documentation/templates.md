@@ -58,9 +58,10 @@ onEliminar(id):
 ## Editor de HospitalConfig
 
 ```
-EditorForm(hospital):
+EditorForm(hospital, tabla):   // edita UNA tabla; las demás no se tocan
   campos básicos:
-    id, name, abbreviation
+    hospital: name, abbreviation (fijos si el hospital ya existe y es integrado)
+    tabla:    name
 
   editor de groups:
     lista de GroupDef
@@ -78,10 +79,15 @@ EditorForm(hospital):
       selector: 'hidden' | 'optional' | 'required'
 
   onGuardar():
-    validar: id único, al menos 1 group, al menos 1 col
-    hospital.isCustom = true
-    storage.saveCustomHospital(hospital)
+    validar: nombres, al menos 1 group, al menos 1 col
+    reemplazar/añadir SOLO esta tabla en la entrada custom del hospital
+    storage.saveCustomHospital(entrada)
     mode ← 'list'
+
+Lista: cada hospital (integrado o custom) con sus tablas.
+  [+ Tabla] crea una tabla nueva en ese hospital (también en integrados:
+  se guarda como entrada custom con el mismo id, ver [[hospitals]]).
+  Tablas integradas: solo lectura. Tablas custom: Editar / Eliminar.
 ```
 
 ---

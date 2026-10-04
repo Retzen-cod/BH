@@ -14,9 +14,9 @@ import { useRouter } from 'expo-router';
 import { useFocusEffect } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { HospitalConfig, GroupDef, ColDef } from '../src/types/hospital';
-import { getAllHospitals } from '../src/hospitals';
-import { getCustomHospitals, saveCustomHospital, deleteCustomHospital } from '../src/utils/hospitalStorage';
+import { HospitalConfig, TableConfig, GroupDef, ColDef } from '../src/types/hospital';
+import { getAllHospitalsAsync, isBuiltInTable } from '../src/hospitals';
+import { getCustomHospitals, saveCustomHospital, deleteCustomTable } from '../src/utils/hospitalStorage';
 
 // ─── Paleta de colores para grupos ───────────────────────────────────────────
 
@@ -49,12 +49,16 @@ export default function Templates() {
   const insets = useSafeAreaInsets();
 
   const [view, setView]           = useState<ViewMode>('list');
-  const [customs, setCustoms]     = useState<HospitalConfig[]>([]);
+  const [hospitals, setHospitals] = useState<HospitalConfig[]>([]);
 
-  // ── Estado del editor ──────────────────────────────────────────────────────
-  const [editId, setEditId]       = useState('');
+  // ── Estado del editor (edita UNA tabla de un hospital) ─────────────────────
+  const [editId, setEditId]       = useState('');   // id del hospital
   const [editName, setEditName]   = useState('');
   const [editAbbr, setEditAbbr]   = useState('');
+  const [hospLocked, setHospLocked] = useState(false); // hospital existente: nombre/abrev. fijos
+  const [editTableId, setEditTableId]     = useState('');
+  const [editTableName, setEditTableName] = useState('');
+  const [editTableExtra, setEditTableExtra] = useState<Partial<TableConfig>>({}); // campos no editables aquí (balance, card…)
   const [editGroups, setEditGroups] = useState<GroupDef[]>([]);
   const [editCols, setEditCols]   = useState<ColDef[]>([]);
 
@@ -70,29 +74,46 @@ export default function Templates() {
 
   // ── Carga ──────────────────────────────────────────────────────────────────
 
-  useFocusEffect(useCallback(() => { loadCustoms(); }, []));
+  useFocusEffect(useCallback(() => { loadHospitals(); }, []));
 
-  async function loadCustoms() {
-    setCustoms(await getCustomHospitals());
+  async function loadHospitals() {
+    setHospitals(await getAllHospitalsAsync());
+  }
+
+  function resetForms(firstGroup = '') {
+    setGLabel(''); setGColor(0);
+    setCLabel(''); setCWidth(62); setCGroup(firstGroup); setCIsTA(false);
   }
 
   // ── Abrir editor ───────────────────────────────────────────────────────────
 
+  /** Hospital nuevo con su primera tabla. */
   function openNew() {
     setEditId(Date.now().toString());
-    setEditName(''); setEditAbbr('');
+    setEditName(''); setEditAbbr(''); setHospLocked(false);
+    setEditTableId(`t_${Date.now()}`); setEditTableName(''); setEditTableExtra({});
     setEditGroups([]); setEditCols([]);
-    setGLabel(''); setGColor(0);
-    setCLabel(''); setCWidth(62); setCGroup(''); setCIsTA(false);
+    resetForms();
     setView('editor');
   }
 
-  function openEdit(h: HospitalConfig) {
+  /** Tabla nueva en un hospital existente (integrado o personalizado). */
+  function openNewTable(h: HospitalConfig) {
     setEditId(h.id);
-    setEditName(h.name); setEditAbbr(h.abbreviation);
-    setEditGroups([...h.groups]); setEditCols([...h.dataCols]);
-    setGLabel(''); setGColor(0);
-    setCLabel(''); setCWidth(62); setCGroup(h.groups[0]?.key ?? ''); setCIsTA(false);
+    setEditName(h.name); setEditAbbr(h.abbreviation); setHospLocked(true);
+    setEditTableId(`t_${Date.now()}`); setEditTableName(''); setEditTableExtra({});
+    setEditGroups([]); setEditCols([]);
+    resetForms();
+    setView('editor');
+  }
+
+  function openEdit(h: HospitalConfig, t: TableConfig) {
+    const { id, name, groups, dataCols, ...extra } = t;
+    setEditId(h.id);
+    setEditName(h.name); setEditAbbr(h.abbreviation); setHospLocked(!h.isCustom);
+    setEditTableId(id); setEditTableName(name); setEditTableExtra(extra);
+    setEditGroups([...groups]); setEditCols([...dataCols]);
+    resetForms(groups[0]?.key ?? '');
     setView('editor');
   }
 
@@ -147,8 +168,8 @@ export default function Templates() {
   // ── Guardar ────────────────────────────────────────────────────────────────
 
   async function saveTemplate() {
-    if (!editName.trim() || !editAbbr.trim()) {
-      Alert.alert('Campos requeridos', 'El nombre y la abreviación son obligatorios.'); return;
+    if (!editName.trim() || !editAbbr.trim() || !editTableName.trim()) {
+      Alert.alert('Campos requeridos', 'El nombre del hospital, la abreviación y el nombre de la tabla son obligatorios.'); return;
     }
     if (editGroups.length === 0) {
       Alert.alert('Sin grupos', 'Agrega al menos un bloque de agrupación.'); return;
@@ -156,22 +177,33 @@ export default function Templates() {
     if (editCols.length === 0) {
       Alert.alert('Sin columnas', 'Agrega al menos una columna de datos.'); return;
     }
-    const h: HospitalConfig = {
-      id: editId, name: editName.trim(),
-      abbreviation: editAbbr.trim().toUpperCase(),
+    const table: TableConfig = {
+      ...editTableExtra,
+      id: editTableId, name: editTableName.trim(),
       groups: editGroups, dataCols: editCols,
-      isCustom: true,
     };
-    await saveCustomHospital(h);
-    await loadCustoms();
+    // Solo se toca la entrada custom de este hospital y solo esta tabla.
+    const customs = await getCustomHospitals();
+    const entry: HospitalConfig = customs.find(h => h.id === editId)
+      ?? { id: editId, name: '', abbreviation: '', isCustom: true, tables: [] };
+    if (!hospLocked) {
+      entry.name = editName.trim();
+      entry.abbreviation = editAbbr.trim().toUpperCase();
+    } else if (!entry.name) {
+      entry.name = editName; entry.abbreviation = editAbbr;
+    }
+    const idx = entry.tables.findIndex(t => t.id === table.id);
+    if (idx >= 0) entry.tables[idx] = table; else entry.tables.push(table);
+    await saveCustomHospital(entry);
+    await loadHospitals();
     setView('list');
   }
 
-  async function deleteTemplate(id: string) {
-    Alert.alert('Eliminar plantilla', '¿Confirmas?', [
+  async function deleteTemplate(hospitalId: string, tableId: string) {
+    Alert.alert('Eliminar tabla', 'Los pacientes que la usen pasarán a la primera tabla del hospital. ¿Confirmas?', [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Eliminar', style: 'destructive', onPress: async () => {
-        await deleteCustomHospital(id); await loadCustoms();
+        await deleteCustomTable(hospitalId, tableId); await loadHospitals();
       }},
     ]);
   }
@@ -179,7 +211,6 @@ export default function Templates() {
   // ── Render: lista ──────────────────────────────────────────────────────────
 
   if (view === 'list') {
-    const staticHospitals = getAllHospitals();
     return (
       <View style={styles.screen}>
         <View style={{ height: insets.top, backgroundColor: '#1E3A5F' }} />
@@ -189,52 +220,52 @@ export default function Templates() {
           </TouchableOpacity>
           <Text style={styles.topBarTitle}>Plantillas</Text>
           <TouchableOpacity style={styles.newBtn} onPress={openNew}>
-            <Text style={styles.newBtnText}>+ Nueva</Text>
+            <Text style={styles.newBtnText}>+ Hospital</Text>
           </TouchableOpacity>
         </View>
 
         <ScrollView contentContainerStyle={styles.list}>
+          {hospitals.map((h) => (
+            <View key={h.id} style={{ marginBottom: 16 }}>
+              <View style={styles.hospitalHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.cardName}>{h.name}</Text>
+                  <Text style={styles.cardAbbr}>{h.abbreviation}</Text>
+                </View>
+                <TouchableOpacity style={styles.editBtn} onPress={() => openNewTable(h)}>
+                  <Text style={styles.editBtnText}>+ Tabla</Text>
+                </TouchableOpacity>
+              </View>
 
-          {/* Hospitales integrados (solo lectura) */}
-          <Text style={styles.sectionLabel}>INTEGRADOS</Text>
-          {staticHospitals.map((h) => (
-            <View key={h.id} style={styles.card}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.cardName}>{h.name}</Text>
-                <Text style={styles.cardAbbr}>{h.abbreviation}</Text>
-                <Text style={styles.cardMeta}>
-                  {h.groups.map(g => `${h.dataCols.filter(c => c.group === g.key).length} ${g.label}`).join(' · ')}
-                </Text>
-              </View>
-              <View style={styles.builtInBadge}>
-                <Text style={styles.builtInText}>Integrado</Text>
-              </View>
+              {h.tables.map((t) => {
+                const builtIn = isBuiltInTable(h.id, t.id);
+                return (
+                  <View key={t.id} style={styles.card}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.cardName}>{t.name}</Text>
+                      <Text style={styles.cardMeta}>
+                        {t.groups.map(g => `${t.dataCols.filter(c => c.group === g.key).length} ${g.label}`).join(' · ')}
+                      </Text>
+                    </View>
+                    {builtIn ? (
+                      <View style={styles.builtInBadge}>
+                        <Text style={styles.builtInText}>Integrada</Text>
+                      </View>
+                    ) : (
+                      <>
+                        <TouchableOpacity style={styles.editBtn} onPress={() => openEdit(h, t)}>
+                          <Text style={styles.editBtnText}>✏️ Editar</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.deleteBtn} onPress={() => deleteTemplate(h.id, t.id)}>
+                          <Text style={styles.deleteBtnText}>🗑</Text>
+                        </TouchableOpacity>
+                      </>
+                    )}
+                  </View>
+                );
+              })}
             </View>
           ))}
-
-          {/* Plantillas personalizadas */}
-          <Text style={[styles.sectionLabel, { marginTop: 20 }]}>PERSONALIZADAS</Text>
-          {customs.length === 0 && (
-            <Text style={styles.emptyText}>No hay plantillas personalizadas. Toca "+ Nueva" para crear una.</Text>
-          )}
-          {customs.map((h) => (
-            <View key={h.id} style={styles.card}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.cardName}>{h.name}</Text>
-                <Text style={styles.cardAbbr}>{h.abbreviation}</Text>
-                <Text style={styles.cardMeta}>
-                  {h.groups.map(g => `${h.dataCols.filter(c => c.group === g.key).length} ${g.label}`).join(' · ')}
-                </Text>
-              </View>
-              <TouchableOpacity style={styles.editBtn} onPress={() => openEdit(h)}>
-                <Text style={styles.editBtnText}>✏️ Editar</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.deleteBtn} onPress={() => deleteTemplate(h.id)}>
-                <Text style={styles.deleteBtnText}>🗑</Text>
-              </TouchableOpacity>
-            </View>
-          ))}
-
         </ScrollView>
       </View>
     );
@@ -249,7 +280,7 @@ export default function Templates() {
         <TouchableOpacity onPress={() => setView('list')} style={styles.backBtn}>
           <Text style={styles.backBtnText}>← Lista</Text>
         </TouchableOpacity>
-        <Text style={styles.topBarTitle}>{editName || 'Nueva plantilla'}</Text>
+        <Text style={styles.topBarTitle}>{editTableName || 'Nueva tabla'}</Text>
         <TouchableOpacity style={styles.saveBtn} onPress={saveTemplate}>
           <Text style={styles.saveBtnText}>💾 Guardar</Text>
         </TouchableOpacity>
@@ -259,8 +290,15 @@ export default function Templates() {
 
         {/* ── Información general ── */}
         <Text style={styles.sectionLabel}>INFORMACIÓN</Text>
-        <EField label="Nombre del hospital *" value={editName} onChange={setEditName} />
-        <EField label="Abreviación *" value={editAbbr} onChange={setEditAbbr} placeholder="Ej: HNSJDDSM" />
+        {hospLocked ? (
+          <Text style={styles.sectionHint}>{editName} · {editAbbr}</Text>
+        ) : (
+          <>
+            <EField label="Nombre del hospital *" value={editName} onChange={setEditName} />
+            <EField label="Abreviación *" value={editAbbr} onChange={setEditAbbr} placeholder="Ej: HNSJDDSM" />
+          </>
+        )}
+        <EField label="Nombre de la tabla *" value={editTableName} onChange={setEditTableName} placeholder="Ej: UCI adultos" />
 
         {/* ── Grupos de agrupación ── */}
         <Text style={[styles.sectionLabel, { marginTop: 16 }]}>BLOQUES DE AGRUPACIÓN</Text>
@@ -438,6 +476,7 @@ const styles = StyleSheet.create({
   cardAbbr: { fontSize: 12, color: '#6B7280' },
   cardMeta: { fontSize: 11, color: '#9CA3AF', marginTop: 3 },
 
+  hospitalHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
   builtInBadge: { backgroundColor: '#F3F4F6', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 },
   builtInText:  { fontSize: 11, fontWeight: '600', color: '#9CA3AF' },
   editBtn:      { backgroundColor: '#EFF6FF', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, marginRight: 6 },
